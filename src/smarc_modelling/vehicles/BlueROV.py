@@ -39,7 +39,8 @@ Author:     David Doerner
 import numpy as np
 import math
 from scipy.linalg import block_diag
-from smarc_modelling.lib.gnc import *
+from Utilities.smarc_modelling.src.smarc_modelling.lib.gnc import *
+from Utilities.sets import HyperRectangle
 
 
 class SolidStructure:
@@ -156,6 +157,10 @@ class BlueROV():
         self.D_nl = np.zeros((6,6))
 
         self.gamma = 100 # Scaling factor for numerical stability of quaternion differentiation
+        
+        self.x_prev = None  # Old state vector for numerical integration
+        self.U = HyperRectangle(np.array([-85, -85, -120, -26, -14, -22]),
+                                np.array([85, 85, 120, 26, 14, 22]))
 
     def init_vehicle(self):
         """
@@ -199,6 +204,67 @@ class BlueROV():
         x_dot = np.concatenate([eta_dot, nu_dot])
 
         return x_dot
+    
+    def step(self, x, u, dt):
+        """
+        Naive step integration with a custom time step
+        Args:
+            x: state space vector with [eta, nu]
+            u: control inputs as [x_vbs, x_lcg, delta_s, delta_r, rpm1, rpm2]
+            dt: time step for integration
+
+        Returns:
+            x_next: state space vector at next time step
+        """
+        if self.x_prev is None:
+            self.x_prev = x
+
+        # Calculate the dynamics
+        x_dot = self.fx(x) + self.gx(x)@u #self.dynamics(x, u)
+
+        # Update the state using Euler integration
+        x_next = self.x_prev + x_dot * dt
+
+        # Update the previous state for the next step
+        self.x_prev = x_next
+
+        return x_next
+
+    def fx(self, x):
+        """
+        Compute the autonomous dynamics of the AUV.
+        Args:
+            x: state space vector with [eta, nu]
+        
+        Returns:
+            fx: Time derivative of the state space vector
+        """
+        eta = x[0:7]
+        nu = x[7:13]
+
+        self.calculate_system_state(nu, eta)
+        self.calculate_C()
+        self.calculate_D()
+        self.calculate_g()
+
+        nu_dot = self.Minv @ (-np.matmul(self.C, self.nu_r) - np.matmul(self.D, self.nu_r) - self.g_vec)
+        eta_dot = self.eta_dynamics(eta, nu)
+
+        return np.concatenate([eta_dot, nu_dot])
+    
+    def gx(self, x):
+        """
+        Compute the control input matrix for the AUV.
+        Args:
+            x: state space vector with [eta, nu]
+        Returns:
+            gx: Control input matrix
+        """
+        # The control input matrix is the inverse of the mass matrixs
+        gx = np.zeros((13, 6))
+        gx[7:13, :] = self.Minv
+        return gx
+
 
 
     def calculate_system_state(self, x, eta):
@@ -219,7 +285,7 @@ class BlueROV():
         self.nu_c = np.array([u_c, v_c, 0, 0, 0, 0], float)
         self.nu_r = nu - self.nu_c
 
-        self.U = np.sqrt(u ** 2 + v ** 2 + w ** 2)
+        U = np.sqrt(u ** 2 + v ** 2 + w ** 2)
         self.U_r = np.linalg.norm(self.nu_r[:3])
 
         self.alpha = 0.0
