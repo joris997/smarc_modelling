@@ -41,6 +41,7 @@ import math
 from scipy.linalg import block_diag
 from Utilities.smarc_modelling.src.smarc_modelling.lib.gnc import *
 from Utilities.sets import HyperRectangle
+from Utilities.optimization import math_backend
 
 
 class SolidStructure:
@@ -83,12 +84,17 @@ class BlueROV():
             dt=0.02,
             V_current=0,
             beta_current=0,
+            backend='np'
     ):
         self.dt = dt # Sim time step, necessary for evaluation of the actuator dynamics
+        self.backend = backend
+        if backend not in math_backend:
+            raise ValueError(f"Unsupported backend: {backend}. Choose from {list(math_backend.keys())}.")
+        self.math = math_backend[backend]
 
         # Constants
-        self.p_OC_O = np.array([0., 0, 0.], float)  # Measurement frame C in CO (O)
-        self.D2R = math.pi / 180  # Degrees to radians
+        self.p_OC_O = self.math['array']([0., 0., 0.])  # Measurement frame C in CO (O)
+        self.D2R = self.math['sqrt'](math.pi / 180)  # Degrees to radians
         self.rho_w = self.rho = 1026  # Water density (kg/m³)
         self.g = 9.81  # Gravity acceleration (m/s²)
 
@@ -100,17 +106,17 @@ class BlueROV():
         self.beta_c = beta_current * self.D2R  # Current water direction (rad)
 
         # Initialize state vectors
-        self.nu = np.zeros(6)  # [u, v, w, p, q, r]
-        self.eta = np.zeros(7)  # [x, y, z, q0, q1, q2, q3]
+        self.nu = self.math['zeros'](6)  # [u, v, w, p, q, r]
+        self.eta = self.math['zeros'](7)  # [x, y, z, q0, q1, q2, q3]
         self.eta[3] = 1.0
 
         # Initialize the AUV model
         self.name = ("BlueROV")
 
         # Rigid-body mass matrix expressed in CO
-        self.m = self.ss.m_ss 
-        self.p_OG_O = np.array([0., 0, 0.], float)  # CG w.r.t. to the CO, we
-        self.p_OB_O = np.array([0., 0, 0], float)  # CB w.r.t. to the CO
+        self.m = self.ss.m_ss
+        self.p_OG_O = self.math['array']([0., 0., 0.])  # CG w.r.t. to the CO, we
+        self.p_OB_O = self.math['array']([0., 0., 0.])  # CB w.r.t. to the CO
 
         # Weight and buoyancy
         self.W = self.m * self.g
@@ -145,16 +151,16 @@ class BlueROV():
         self.Nrr = 1.5 # Yaw damping
 
         # System matrices
-        self.MRB = np.diag([self.m, self.m, self.m, self.Ix, self.Iy, self.Iz])
-        self.MA = np.diag([self.Xdu, self.Ydv, self.Zdw, self.Kdp, self.Mdq, self.Ndr])
+        self.MRB = self.math['diag']([self.m, self.m, self.m, self.Ix, self.Iy, self.Iz])
+        self.MA = self.math['diag']([self.Xdu, self.Ydv, self.Zdw, self.Kdp, self.Mdq, self.Ndr])
         self.M = self.MRB + self.MA
-        self.Minv = np.linalg.inv(self.M)
+        self.Minv = self.math['inv'](self.M)
 
-        self.C = np.zeros((6,6))
+        self.C = self.math['zeros']((6,6))
 
-        self.D = np.zeros((6,6))
-        self.D_lin = np.diag([self.Xu, self.Yv, self.Zw, self.Kp, self.Mq, self.Nr])
-        self.D_nl = np.zeros((6,6))
+        self.D = self.math['zeros']((6,6))
+        self.D_lin = self.math['diag']([self.Xu, self.Yv, self.Zw, self.Kp, self.Mq, self.Nr])
+        self.D_nl = self.math['zeros']((6,6))
 
         self.gamma = 100 # Scaling factor for numerical stability of quaternion differentiation
         
@@ -170,7 +176,7 @@ class BlueROV():
             l_ss=0.46,
             d_ss=0.58,
             m_ss=13.5,
-            p_CSsg_O = np.array([0., 0, 0.]),
+            p_CSsg_O = self.math['array']([0., 0, 0.]),
             p_OC_O=self.p_OC_O
         )
 
@@ -197,11 +203,11 @@ class BlueROV():
         self.calculate_g()
         self.calculate_tau(u)
 
-        np.set_printoptions(precision=3)
+        # np.set_printoptions(precision=3)
 
-        nu_dot = self.Minv @ (self.tau - np.matmul(self.C,self.nu_r) - np.matmul(self.D,self.nu_r) - self.g_vec)
+        nu_dot = self.Minv @ (self.tau - self.math['matmul'](self.C,self.nu_r) - self.math['matmul'](self.D,self.nu_r) - self.g_vec)
         eta_dot = self.eta_dynamics(eta, nu)
-        x_dot = np.concatenate([eta_dot, nu_dot])
+        x_dot = self.math['concatenate']([eta_dot, nu_dot])
 
         return x_dot
     
@@ -247,11 +253,11 @@ class BlueROV():
         self.calculate_D()
         self.calculate_g()
 
-        nu_dot = self.Minv @ (-np.matmul(self.C, self.nu_r) - np.matmul(self.D, self.nu_r) - self.g_vec)
+        nu_dot = self.Minv @ (-self.math['matmul'](self.C, self.nu_r) - self.math['matmul'](self.D, self.nu_r) - self.g_vec)
         eta_dot = self.eta_dynamics(eta, nu)
 
-        return np.concatenate([eta_dot, nu_dot])
-    
+        return self.math['concatenate']([eta_dot, nu_dot])
+
     def gx(self, x):
         """
         Compute the control input matrix for the AUV.
@@ -261,7 +267,7 @@ class BlueROV():
             gx: Control input matrix
         """
         # The control input matrix is the inverse of the mass matrixs
-        gx = np.zeros((13, 6))
+        gx = self.math['zeros']((13, 6))
         gx[7:13, :] = self.Minv
         return gx
 
@@ -275,30 +281,32 @@ class BlueROV():
 
         # Extract Euler angles
         quat = eta[3:7]
-        quat = quat/np.linalg.norm(quat)
-        self.psi, self.theta, self.phi = quaternion_to_angles(quat) 
+        quat = quat/self.math['norm'](quat)
+        self.psi, self.theta, self.phi = self.math['quaternion_to_angles'](quat)
 
         # Relative velocities due to current
-        u, v, w, _, _, _ = nu
-        u_c = self.V_c * math.cos(self.beta_c - self.psi)
-        v_c = self.V_c * math.sin(self.beta_c - self.psi)
-        self.nu_c = np.array([u_c, v_c, 0, 0, 0, 0], float)
+        u, v, w, _, _, _ = nu[0], nu[1], nu[2], nu[3], nu[4], nu[5]
+        u_c = self.V_c * self.math['cos'](self.beta_c - self.psi)
+        v_c = self.V_c * self.math['sin'](self.beta_c - self.psi)
+        self.nu_c = self.math['array']([u_c, v_c, 0., 0., 0., 0.])
         self.nu_r = nu - self.nu_c
 
-        U = np.sqrt(u ** 2 + v ** 2 + w ** 2)
-        self.U_r = np.linalg.norm(self.nu_r[:3])
+        U = self.math['sqrt'](u ** 2 + v ** 2 + w ** 2)
+        self.U_r = self.math['norm'](self.nu_r[:3])
 
-        self.alpha = 0.0
-        if abs(self.nu_r[0]) > 1e-6:
-            self.alpha = math.atan2(self.nu_r[2], self.nu_r[0])
+        # TODO: this cannot be implemented with casadi!
+        if self.backend == 'np':
+            self.alpha = 0.0
+            if abs(self.nu_r[0]) > 1e-6:
+                self.alpha = self.math['atan2'](self.nu_r[2], self.nu_r[0])
 
 
     def calculate_C(self):
         """
         Calculate Corriolis Matrix
         """
-        CRB = m2c(self.MRB, self.nu_r)
-        CA = m2c(self.MA, self.nu_r)
+        CRB = self.math['m2c'](self.MRB, self.nu_r)
+        CA = self.math['m2c'](self.MA, self.nu_r)
 
         self.C = CRB + CA
 
@@ -307,12 +315,12 @@ class BlueROV():
         Calculate damping
         """
         # Nonlinear damping
-        self.D_nl[0,0] = self.Xuu * np.abs(self.nu_r[0])
-        self.D_nl[1,1] = self.Yvv * np.abs(self.nu_r[1])
-        self.D_nl[2,2] = self.Zww * np.abs(self.nu_r[2])
-        self.D_nl[3,3] = self.Kpp * np.abs(self.nu_r[3])
-        self.D_nl[4,4] = self.Mqq * np.abs(self.nu_r[4])
-        self.D_nl[5,5] = self.Nrr * np.abs(self.nu_r[5])
+        self.D_nl[0,0] = self.Xuu * self.math['abs'](self.nu_r[0])
+        self.D_nl[1,1] = self.Yvv * self.math['abs'](self.nu_r[1])
+        self.D_nl[2,2] = self.Zww * self.math['abs'](self.nu_r[2])
+        self.D_nl[3,3] = self.Kpp * self.math['abs'](self.nu_r[3])
+        self.D_nl[4,4] = self.Mqq * self.math['abs'](self.nu_r[4])
+        self.D_nl[5,5] = self.Nrr * self.math['abs'](self.nu_r[5])
 
         self.D = self.D_lin + self.D_nl
 
@@ -321,7 +329,7 @@ class BlueROV():
         Calculate gravity vector
         """
         self.W = self.m * self.g
-        self.g_vec = gvect(self.W, self.B, self.theta, self.phi, self.p_OG_O, self.p_OB_O)
+        self.g_vec = self.math['gvect'](self.W, self.B, self.theta, self.phi, self.p_OG_O, self.p_OB_O)
 
     def calculate_tau(self, u):
         """
@@ -344,24 +352,25 @@ class BlueROV():
         """
         # Extract position and quaternion
         q = eta[3:7]  # [q0, q1, q2, q3] where q0 is scalar part
-        q = q/np.linalg.norm(q)
+        q = q/self.math['norm'](q)
 
         # Convert quaternion to DCM for position kinematics
-        C = quaternion_to_dcm(q)
+        C = self.math['quaternion_to_dcm'](q)
 
         # Position dynamics: ṗ = C * v
-        pos_dot = C @ nu[0:3]
+        pos_dot = self.math['matmul'](C, nu[0:3])
 
         ## From Fossen 2021, eq. 2.78:
         om = nu[3:6]  # Angular velocity
-        q0, q1, q2, q3 = q
-        T_q_n_b = 0.5 * np.array([
+        q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
+        T_q_n_b = 0.5 * self.math['array']([
                                  [-q1, -q2, -q3],
                                  [q0, -q3, q2],
                                  [q3, q0, -q1],
                                  [-q2, q1, q0]
                                  ])
-        q_dot = T_q_n_b @ om + self.gamma/2 * (1 - q.T.dot(q)) * q
+        q_dot = self.math['matmul'](T_q_n_b, om) + \
+            self.gamma/2 * (1 - self.math['matmul'](q.T, q)) * q
 
-        return np.concatenate([pos_dot, q_dot])
+        return self.math['concatenate']([pos_dot, q_dot])
 

@@ -3,20 +3,20 @@ GNC functions for the casadi model.
 Only the necessary functions from gnc.py to make the model work are converted in this script
 
 """
-import casadi as ca
+import casadi as cs
 
 
-def skew_symmetric_ca(v):
+def skew_symmetric_cs(v):
     """
     Skew symmetric matrix
     """
-    return ca.vertcat(
-        ca.horzcat(0, -v[2], v[1]),
-        ca.horzcat(v[2], 0, -v[0]),
-        ca.horzcat(-v[1], v[0], 0)
+    return cs.vertcat(
+        cs.horzcat(0, -v[2], v[1]),
+        cs.horzcat(v[2], 0, -v[0]),
+        cs.horzcat(-v[1], v[0], 0)
     )
 
-def m2c_ca(M, nu):
+def m2c_cs(M, nu):
     """
     C = m2c(M, nu) computes the Coriolis and centripetal matrix C from the
     mass matrix M and generalized velocity vector nu (Fossen 2021, Ch. 3)
@@ -32,16 +32,16 @@ def m2c_ca(M, nu):
 
         nu1 = nu[0:3]
         nu2 = nu[3:6]
-        dt_dnu1 = ca.mtimes(M11, nu1) + ca.mtimes(M12, nu2)
-        dt_dnu2 = ca.mtimes(M21, nu1) + ca.mtimes(M22, nu2)
+        dt_dnu1 = cs.mtimes(M11, nu1) + cs.mtimes(M12, nu2)
+        dt_dnu2 = cs.mtimes(M21, nu1) + cs.mtimes(M22, nu2)
 
-        C = ca.MX.zeros(6, 6)
-        C[0:3, 3:6] = -skew_symmetric_ca(dt_dnu1)
-        C[3:6, 0:3] = -skew_symmetric_ca(dt_dnu1)
-        C[3:6, 3:6] = -skew_symmetric_ca(dt_dnu2)
+        C = cs.MX.zeros(6, 6)
+        C[0:3, 3:6] = -skew_symmetric_cs(dt_dnu1)
+        C[3:6, 0:3] = -skew_symmetric_cs(dt_dnu1)
+        C[3:6, 3:6] = -skew_symmetric_cs(dt_dnu2)
 
     else:  # 3-DOF model (surge, sway, and yaw)
-        C = ca.MX.zeros(3, 3)
+        C = cs.MX.zeros(3, 3)
         C[0, 2] = -M[1, 1] * nu[1] - M[1, 2] * nu[2]
         C[1, 2] = M[0, 0] * nu[0]
         C[2, 0] = -C[0, 2]
@@ -49,7 +49,7 @@ def m2c_ca(M, nu):
 
     return C
 
-def gvect_ca(W,B,theta,phi,r_bg,r_bb):
+def gvect_cs(W,B,theta,phi,r_bg,r_bb):
     """
     g = gvect(W,B,theta,phi,r_bg,r_bb) computes the 6x1 vector of restoring 
     forces about an arbitrarily point CO for a submerged body. 
@@ -64,12 +64,12 @@ def gvect_ca(W,B,theta,phi,r_bg,r_bb):
         g: 6x1 vector of restoring forces about CO
     """
 
-    sth  = ca.sin(theta)
-    cth  = ca.cos(theta)
-    sphi = ca.sin(phi)
-    cphi = ca.cos(phi)
+    sth  = cs.sin(theta)
+    cth  = cs.cos(theta)
+    sphi = cs.sin(phi)
+    cphi = cs.cos(phi)
 
-    g = ca.vertcat(
+    g = cs.vertcat(
         (W-B) * sth,
         -(W-B) * cth * sphi,
         -(W-B) * cth * cphi,
@@ -80,7 +80,7 @@ def gvect_ca(W,B,theta,phi,r_bg,r_bb):
     
     return g
 
-def calculate_dcm_ca(order, angles):
+def calculate_dcm_cs(order, angles):
     """
     Calculates the Direction Cosine Matrix (DCM) for a given rotation order and angles.
 
@@ -92,7 +92,7 @@ def calculate_dcm_ca(order, angles):
         casadi.MX: A 3x3 DCM matrix.
     """
 
-    def rotation_matrix_ca(axis, angle):
+    def rotation_matrix_cs(axis, angle):
         """
         Creates a rotation matrix for a given axis and angle.
 
@@ -103,27 +103,27 @@ def calculate_dcm_ca(order, angles):
         Returns:
             casadi.MX: 3x3 rotation matrix for the axis.
         """
-        c = ca.cos(angle)
-        s = ca.sin(angle)
+        c = cs.cos(angle)
+        s = cs.sin(angle)
 
         # Map arbitrary numbers to X, Y, Z
         if axis in [1, 'X']:  # X-axis
-            return ca.vertcat(
-                ca.horzcat(1, 0, 0),
-                ca.horzcat(0, c, s),
-                ca.horzcat(0, -s, c)
+            return cs.vertcat(
+                cs.horzcat(1, 0, 0),
+                cs.horzcat(0, c, s),
+                cs.horzcat(0, -s, c)
             )
         elif axis in [2, 'Y']:  # Y-axis
-            return ca.vertcat(
-                ca.horzcat(c, 0, -s),
-                ca.horzcat(0, 1, 0),
-                ca.horzcat(s, 0, c)
+            return cs.vertcat(
+                cs.horzcat(c, 0, -s),
+                cs.horzcat(0, 1, 0),
+                cs.horzcat(s, 0, c)
             )
         elif axis in [3, 'Z']:  # Z-axis
-            return ca.vertcat(
-                ca.horzcat(c, s, 0),
-                ca.horzcat(-s, c, 0),
-                ca.horzcat(0, 0, 1)
+            return cs.vertcat(
+                cs.horzcat(c, s, 0),
+                cs.horzcat(-s, c, 0),
+                cs.horzcat(0, 0, 1)
             )
         else:
             raise ValueError("Invalid axis identifier. Use 1 (X), 2 (Y), or 3 (Z).")
@@ -133,13 +133,13 @@ def calculate_dcm_ca(order, angles):
         raise ValueError("Order and angles must have the same number of elements.")
 
     # Compute the DCM
-    dcm = ca.MX.eye(3)  # Start with the identity matrix
+    dcm = cs.MX.eye(3)  # Start with the identity matrix
     for axis, angle in zip(order, angles):
-        dcm = ca.mtimes(rotation_matrix_ca(axis, angle), dcm)
+        dcm = cs.mtimes(rotation_matrix_cs(axis, angle), dcm)
 
     return dcm
 
-def quaternion_to_dcm_ca(q):
+def quaternion_to_dcm_cs(q):
     """
     Converts a quaternion [q0, q1, q2, q3], with scalar part q0, to a Direction
     Cosine Matrix (DCM).
@@ -152,21 +152,21 @@ def quaternion_to_dcm_ca(q):
     """
     q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
 
-    dcm = ca.vertcat(
-        ca.horzcat(1 - 2 * (q2**2 + q3**2), 2 * (q1 * q2 - q0 * q3), 2 * (q1 * q3 + q0 * q2)),
-        ca.horzcat(2 * (q1 * q2 + q0 * q3), 1 - 2 * (q1**2 + q3**2), 2 * (q2 * q3 - q0 * q1)),
-        ca.horzcat(2 * (q1 * q3 - q0 * q2), 2 * (q2 * q3 + q0 * q1), 1 - 2 * (q1**2 + q2**2))
+    dcm = cs.vertcat(
+        cs.horzcat(1 - 2 * (q2**2 + q3**2), 2 * (q1 * q2 - q0 * q3), 2 * (q1 * q3 + q0 * q2)),
+        cs.horzcat(2 * (q1 * q2 + q0 * q3), 1 - 2 * (q1**2 + q3**2), 2 * (q2 * q3 - q0 * q1)),
+        cs.horzcat(2 * (q1 * q3 - q0 * q2), 2 * (q2 * q3 + q0 * q1), 1 - 2 * (q1**2 + q2**2))
     )
 
     return dcm
 
-def quaternion_to_angles_ca(quat):
+def quaternion_to_angles_cs(quat):
         # Assuming quat is a CasADi SX or MX variable
         q0, q1, q2, q3 = quat[0], quat[1], quat[2], quat[3]
     
         # Compute the Euler angles from the quaternion
-        psi = ca.atan2(2 * (q0*q3 + q1*q2), 1 - 2 * (q2**2 + q3**2))
-        theta = ca.asin(2 * (q0*q2 - q3*q1))
-        phi = ca.atan2(2 * (q0*q1 + q2*q3), 1 - 2 * (q1**2 + q2**2))
+        psi = cs.atan2(2 * (q0*q3 + q1*q2), 1 - 2 * (q2**2 + q3**2))
+        theta = cs.asin(2 * (q0*q2 - q3*q1))
+        phi = cs.atan2(2 * (q0*q1 + q2*q3), 1 - 2 * (q1**2 + q2**2))
     
         return psi, theta, phi
