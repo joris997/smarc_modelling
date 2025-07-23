@@ -16,7 +16,7 @@ def skew_symmetric_cs(v):
         cs.horzcat(-v[1], v[0], 0)
     )
 
-def m2c_cs(M, nu):
+def m2c_cs(M, nu, iX=cs.SX):
     """
     C = m2c(M, nu) computes the Coriolis and centripetal matrix C from the
     mass matrix M and generalized velocity vector nu (Fossen 2021, Ch. 3)
@@ -35,13 +35,13 @@ def m2c_cs(M, nu):
         dt_dnu1 = cs.mtimes(M11, nu1) + cs.mtimes(M12, nu2)
         dt_dnu2 = cs.mtimes(M21, nu1) + cs.mtimes(M22, nu2)
 
-        C = cs.MX.zeros(6, 6)
+        C = iX.zeros(6, 6)
         C[0:3, 3:6] = -skew_symmetric_cs(dt_dnu1)
         C[3:6, 0:3] = -skew_symmetric_cs(dt_dnu1)
         C[3:6, 3:6] = -skew_symmetric_cs(dt_dnu2)
 
     else:  # 3-DOF model (surge, sway, and yaw)
-        C = cs.MX.zeros(3, 3)
+        C = iX.zeros(3, 3)
         C[0, 2] = -M[1, 1] * nu[1] - M[1, 2] * nu[2]
         C[1, 2] = M[0, 0] * nu[0]
         C[2, 0] = -C[0, 2]
@@ -168,5 +168,5 @@ def quaternion_to_angles_cs(quat):
         psi = cs.atan2(2 * (q0*q3 + q1*q2), 1 - 2 * (q2**2 + q3**2))
         theta = cs.asin(2 * (q0*q2 - q3*q1))
         phi = cs.atan2(2 * (q0*q1 + q2*q3), 1 - 2 * (q1**2 + q2**2))
-    
-        return psi, theta, phi
+        return cs.vertcat(psi, theta, phi)
+        # return psi, theta, phi

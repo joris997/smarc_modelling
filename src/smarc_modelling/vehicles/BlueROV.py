@@ -38,11 +38,12 @@ Author:     David Doerner
 
 import numpy as np
 import math
+import casadi as cs
 from scipy.linalg import block_diag
 from Utilities.smarc_modelling.src.smarc_modelling.lib.gnc import *
 from Utilities.sets import HyperRectangle
 from Utilities.optimization import math_backend
-
+from Utilities.smarc_modelling.src.smarc_modelling.lib.gnc_casadi import *
 
 class SolidStructure:
     """
@@ -68,9 +69,8 @@ class SolidStructure:
 # Class Vehicle
 class BlueROV():
     """
-    SAM()
-        Integrates all subsystems of the Small and Affordable Maritime AUV.
-
+    BlueROV()
+        Integrates all subsystems of the BlueROV.
 
     Attributes:
         eta: [x, y, z, q0, q1, q2, q3] - Position and quaternion orientation
@@ -84,17 +84,14 @@ class BlueROV():
             dt=0.02,
             V_current=0,
             beta_current=0,
-            backend='np'
+            iX=cs.SX
     ):
         self.dt = dt # Sim time step, necessary for evaluation of the actuator dynamics
-        self.backend = backend
-        if backend not in math_backend:
-            raise ValueError(f"Unsupported backend: {backend}. Choose from {list(math_backend.keys())}.")
-        self.math = math_backend[backend]
+        self.iX = iX
 
         # Constants
-        self.p_OC_O = self.math['array']([0., 0., 0.])  # Measurement frame C in CO (O)
-        self.D2R = self.math['sqrt'](math.pi / 180)  # Degrees to radians
+        self.p_OC_O = self.iX([0., 0., 0.])  # Measurement frame C in CO (O)
+        self.D2R = cs.sqrt(math.pi / 180)  # Degrees to radians
         self.rho_w = self.rho = 1026  # Water density (kg/m³)
         self.g = 9.81  # Gravity acceleration (m/s²)
 
@@ -106,17 +103,17 @@ class BlueROV():
         self.beta_c = beta_current * self.D2R  # Current water direction (rad)
 
         # Initialize state vectors
-        self.nu = self.math['zeros'](6)  # [u, v, w, p, q, r]
-        self.eta = self.math['zeros'](7)  # [x, y, z, q0, q1, q2, q3]
+        self.nu = self.iX.zeros(6,1)  # [u, v, w, p, q, r]
+        self.eta = self.iX.zeros(7,1)  # [x, y, z, q0, q1, q2, q3]
         self.eta[3] = 1.0
 
         # Initialize the AUV model
         self.name = ("BlueROV")
 
-        # Rigid-body mass matrix expressed in CO
+        # Rigid-body mass matrself.iX expressed in CO
         self.m = self.ss.m_ss
-        self.p_OG_O = self.math['array']([0., 0., 0.])  # CG w.r.t. to the CO, we
-        self.p_OB_O = self.math['array']([0., 0., 0.])  # CB w.r.t. to the CO
+        self.p_OG_O = self.iX([0., 0., 0.])  # CG w.r.t. to the CO
+        self.p_OB_O = self.iX([0., 0., 0.])  # CB w.r.t. to the CO
 
         # Weight and buoyancy
         self.W = self.m * self.g
@@ -151,22 +148,30 @@ class BlueROV():
         self.Nrr = 1.5 # Yaw damping
 
         # System matrices
-        self.MRB = self.math['diag']([self.m, self.m, self.m, self.Ix, self.Iy, self.Iz])
-        self.MA = self.math['diag']([self.Xdu, self.Ydv, self.Zdw, self.Kdp, self.Mdq, self.Ndr])
+        self.MRB = cs.diag(self.iX([self.m, self.m, self.m, self.Ix, self.Iy, self.Iz]))
+        self.MA = cs.diag(self.iX([self.Xdu, self.Ydv, self.Zdw, self.Kdp, self.Mdq, self.Ndr]))
         self.M = self.MRB + self.MA
-        self.Minv = self.math['inv'](self.M)
+        self.Minv = cs.inv(self.M)
 
-        self.C = self.math['zeros']((6,6))
+        self.C = self.iX.zeros((6,6))
 
-        self.D = self.math['zeros']((6,6))
-        self.D_lin = self.math['diag']([self.Xu, self.Yv, self.Zw, self.Kp, self.Mq, self.Nr])
-        self.D_nl = self.math['zeros']((6,6))
+        self.D = self.iX.zeros((6,6))
+        self.D_lin = cs.diag(self.iX([self.Xu, self.Yv, self.Zw, self.Kp, self.Mq, self.Nr]))
+        self.D_nl = self.iX.zeros((6,6))
 
         self.gamma = 100 # Scaling factor for numerical stability of quaternion differentiation
         
         self.x_prev = None  # Old state vector for numerical integration
         self.U = HyperRectangle(np.array([-85, -85, -120, -26, -14, -22]),
                                 np.array([85, 85, 120, 26, 14, 22]))
+        
+        self.create_C()
+        self.create_D()
+        self.create_g()
+        self.create_eta_dynamics()
+        self.create_system_state()
+        self.create_fx()
+        self.create_gx()
 
     def init_vehicle(self):
         """
@@ -176,12 +181,12 @@ class BlueROV():
             l_ss=0.46,
             d_ss=0.58,
             m_ss=13.5,
-            p_CSsg_O = self.math['array']([0., 0, 0.]),
+            p_CSsg_O = self.iX([0., 0, 0.]),
             p_OC_O=self.p_OC_O
         )
 
 
-    def dynamics(self, x, u_ref):
+    def dynamics(self, x, u):
         """
         Main dynamics function for integrating the complete AUV state.
 
@@ -195,21 +200,34 @@ class BlueROV():
         """
         eta = x[0:7]
         nu = x[7:13]
-        u = u_ref
 
-        self.calculate_system_state(nu, eta)
-        self.calculate_C()
-        self.calculate_D()
-        self.calculate_g()
-        self.calculate_tau(u)
+        nu_r, euler = self.calculate_system_state(nu, eta)
+        C = self.calculate_C(nu_r=nu_r)
+        D = self.calculate_D(nu_r=nu_r)
+        g = self.calculate_g(euler=euler)
 
-        # np.set_printoptions(precision=3)
+        if not hasattr(self, '_fx_sym'):
+            eta_sym = self.iX.sym('eta', 7)
+            nu_sym = self.iX.sym('nu', 6)
+            self._fx_sym = cs.Function('fx', [eta_sym, nu_sym],
+                [
+                    cs.vertcat(
+                        self.eta_dynamics(eta_sym, nu_sym),
+                        self.Minv @ (u - cs.mtimes(C, nu_r) - cs.mtimes(D, nu_r) - g)
+                    )
+                ]
+            )
+        
+        if isinstance(x, np.ndarray):
+            return np.array(self._fx_sym(eta, nu)).reshape((13,))
+        else:
+            return self._fx_sym(eta, nu)
 
-        nu_dot = self.Minv @ (self.tau - self.math['matmul'](self.C,self.nu_r) - self.math['matmul'](self.D,self.nu_r) - self.g_vec)
-        eta_dot = self.eta_dynamics(eta, nu)
-        x_dot = self.math['concatenate']([eta_dot, nu_dot])
-
-        return x_dot
+        # # np.set_printoptions(precision=3)
+        # nu_dot = self.Minv @ (self.tau - self.math['matmul'](self.C,self.nu_r) - self.math['matmul'](self.D,self.nu_r) - self.g_vec)
+        # eta_dot = self.eta_dynamics(eta, nu)
+        # x_dot = self.math['concatenate']([eta_dot, nu_dot])
+        # return x_dot
     
     def step(self, x, u, dt):
         """
@@ -226,7 +244,7 @@ class BlueROV():
             self.x_prev = x
 
         # Calculate the dynamics
-        x_dot = self.fx(x) + self.gx(x)@u #self.dynamics(x, u)
+        x_dot = self.calculate_fx(x) + self.calculate_gx(x)@u #self.dynamics(x, u)
 
         # Update the state using Euler integration
         x_next = self.x_prev + x_dot * dt
@@ -236,7 +254,7 @@ class BlueROV():
 
         return x_next
 
-    def fx(self, x):
+    def create_fx(self):
         """
         Compute the autonomous dynamics of the AUV.
         Args:
@@ -245,20 +263,30 @@ class BlueROV():
         Returns:
             fx: Time derivative of the state space vector
         """
+        if not hasattr(self, '_fx_sym'):
+            eta_sym = self.iX.sym('eta', 7)
+            nu_sym = self.iX.sym('nu', 6)
+            nu_r_sym = self.iX.sym('nu_r', 6)
+            euler = self.iX.sym('euler', 3)
+            self._fx_sym = cs.Function('fx', [eta_sym, nu_sym, nu_r_sym, euler],
+                [
+                    cs.vertcat(
+                        self.calculate_eta_dynamics(eta_sym, nu_sym),
+                        self.Minv @ (-cs.mtimes(self.calculate_C(nu_r=nu_r_sym), nu_r_sym) - \
+                                      cs.mtimes(self.calculate_D(nu_r=nu_r_sym), nu_r_sym) - self.calculate_g(euler=euler))
+                    )
+                ]
+            )
+    def calculate_fx(self, x):
         eta = x[0:7]
         nu = x[7:13]
+        nu_r, euler = self.calculate_system_state(eta, nu)
+        if isinstance(x, np.ndarray):
+            return np.array(self._fx_sym(eta, nu, nu_r, euler)).reshape((13,))
+        else:
+            return self._fx_sym(eta, nu, nu_r, euler)
 
-        self.calculate_system_state(nu, eta)
-        self.calculate_C()
-        self.calculate_D()
-        self.calculate_g()
-
-        nu_dot = self.Minv @ (-self.math['matmul'](self.C, self.nu_r) - self.math['matmul'](self.D, self.nu_r) - self.g_vec)
-        eta_dot = self.eta_dynamics(eta, nu)
-
-        return self.math['concatenate']([eta_dot, nu_dot])
-
-    def gx(self, x):
+    def create_gx(self):
         """
         Compute the control input matrix for the AUV.
         Args:
@@ -266,80 +294,115 @@ class BlueROV():
         Returns:
             gx: Control input matrix
         """
-        # The control input matrix is the inverse of the mass matrixs
-        gx = self.math['zeros']((13, 6))
-        gx[7:13, :] = self.Minv
-        return gx
+        if not hasattr(self, '_gx_sym'):
+            x_sym = self.iX.sym('x', 13)
+            self._gx_sym = cs.Function('gx', [x_sym],
+                [
+                    cs.vertcat(
+                        self.iX.zeros(7,6),  # No control inputs for eta
+                        self.Minv  # The control input matrix is the inverse of the mass matrix
+                    )
+                ]
+            )
+    def calculate_gx(self, x):
+        if isinstance(x, np.ndarray):
+            return np.array(self._gx_sym(x)).reshape((x.shape[0], 6))
+        else:
+            return self._gx_sym(x)
 
 
-
-    def calculate_system_state(self, x, eta):
+    def create_system_state(self):
         """
         Extract speeds etc. based on state and control inputs
         """
-        nu = x
-
-        # Extract Euler angles
-        quat = eta[3:7]
-        quat = quat/self.math['norm'](quat)
-        self.psi, self.theta, self.phi = self.math['quaternion_to_angles'](quat)
-
-        # Relative velocities due to current
-        u, v, w, _, _, _ = nu[0], nu[1], nu[2], nu[3], nu[4], nu[5]
-        u_c = self.V_c * self.math['cos'](self.beta_c - self.psi)
-        v_c = self.V_c * self.math['sin'](self.beta_c - self.psi)
-        self.nu_c = self.math['array']([u_c, v_c, 0., 0., 0., 0.])
-        self.nu_r = nu - self.nu_c
-
-        U = self.math['sqrt'](u ** 2 + v ** 2 + w ** 2)
-        self.U_r = self.math['norm'](self.nu_r[:3])
-
-        # TODO: this cannot be implemented with casadi!
-        if self.backend == 'np':
-            self.alpha = 0.0
-            if abs(self.nu_r[0]) > 1e-6:
-                self.alpha = self.math['atan2'](self.nu_r[2], self.nu_r[0])
+        if not hasattr(self, '_nu_r_euler_sym'):
+            eta_sym = self.iX.sym('eta', 7)
+            nu_sym = self.iX.sym('nu', 6)
+            self._nu_r_euler_sym = cs.Function('nu_r_euler', [eta_sym, nu_sym],
+                [
+                    nu_sym - cs.vertcat(
+                        self.V_c * cs.cos(self.beta_c - quaternion_to_angles_cs(eta_sym[3:7])[0]),
+                        self.V_c * cs.sin(self.beta_c - quaternion_to_angles_cs(eta_sym[3:7])[0]),
+                        0,0,0,0
+                    ),
+                    quaternion_to_angles_cs(eta_sym[3:7]/cs.norm_2(eta_sym[3:7]))
+                ]
+            )
+    def calculate_system_state(self, eta, nu):
+        if isinstance(eta, np.ndarray) and isinstance(nu, np.ndarray):
+            nu_r, euler = self._nu_r_euler_sym(eta, nu)
+            return np.array(nu_r).reshape((6,)), np.array(euler).reshape((3,))
+        else:
+            nu_r, euler = self._nu_r_euler_sym(eta, nu)
+            return nu_r, euler
 
 
-    def calculate_C(self):
+    def create_C(self):
         """
         Calculate Corriolis Matrix
         """
-        CRB = self.math['m2c'](self.MRB, self.nu_r)
-        CA = self.math['m2c'](self.MA, self.nu_r)
+        if not hasattr(self, '_C_sym'):
+            # Define symbolic variables
+            nu_r_sym = self.iX.sym('nu_r', 6)
+            # Calculate the Coriolis matrix
+            CRB = m2c_cs(self.MRB, nu_r_sym, self.iX)
+            CA = m2c_cs(self.MA, nu_r_sym, self.iX)
+            self._C_sym = cs.Function('C', [nu_r_sym], 
+                [
+                    CRB + CA
+                ]
+            )
+    def calculate_C(self, nu_r):
+        if isinstance(nu_r, np.ndarray):
+            return np.array(self._C_sym(nu_r)).reshape((nu_r.shape[0], nu_r.shape[0]))
+        else:
+            return self._C_sym(nu_r)
 
-        self.C = CRB + CA
 
-    def calculate_D(self):
+    def create_D(self):
         """
         Calculate damping
         """
-        # Nonlinear damping
-        self.D_nl[0,0] = self.Xuu * self.math['abs'](self.nu_r[0])
-        self.D_nl[1,1] = self.Yvv * self.math['abs'](self.nu_r[1])
-        self.D_nl[2,2] = self.Zww * self.math['abs'](self.nu_r[2])
-        self.D_nl[3,3] = self.Kpp * self.math['abs'](self.nu_r[3])
-        self.D_nl[4,4] = self.Mqq * self.math['abs'](self.nu_r[4])
-        self.D_nl[5,5] = self.Nrr * self.math['abs'](self.nu_r[5])
+        if not hasattr(self, '_D_sym'):
+            nu_r_sym = self.iX.sym('nu_r', 6)
+            self._D_sym = cs.Function('D', [nu_r_sym],
+                [
+                    2*cs.diag(cs.vertcat(
+                        self.Xuu * cs.fabs(nu_r_sym[0]),
+                        self.Yvv * cs.fabs(nu_r_sym[1]),
+                        self.Zww * cs.fabs(nu_r_sym[2]),
+                        self.Kpp * cs.fabs(nu_r_sym[3]),
+                        self.Mqq * cs.fabs(nu_r_sym[4]),
+                        self.Nrr * cs.fabs(nu_r_sym[5])
+                    ))
+                ]
+            )
+    def calculate_D(self, nu_r):
+        if isinstance(nu_r, np.ndarray):
+            return np.array(self._D_sym(nu_r)).reshape((nu_r.shape[0], nu_r.shape[0]))
+        else:
+            return self._D_sym(nu_r)
 
-        self.D = self.D_lin + self.D_nl
 
-    def calculate_g(self):
+    def create_g(self):
         """
         Calculate gravity vector
         """
-        self.W = self.m * self.g
-        self.g_vec = self.math['gvect'](self.W, self.B, self.theta, self.phi, self.p_OG_O, self.p_OB_O)
+        if not hasattr(self, '_g_sym'):
+            euler_sym = self.iX.sym('euler', 3)  # [psi, theta, phi]
+            self._g_sym = cs.Function('g', [euler_sym],
+                [
+                    gvect_cs(self.W, self.B, euler_sym[1], euler_sym[2], self.p_OG_O, self.p_OB_O)
+                ]
+            )
+    def calculate_g(self, euler):
+        if isinstance(euler, np.ndarray):
+            return np.array(self._g_sym(euler)).reshape((6,))
+        else:
+            return self._g_sym(euler)
 
-    def calculate_tau(self, u):
-        """
-        All external forces
-        Right now, only the control inputs as force and torque around the corresponding axis
-        """
-        self.tau = u 
 
-
-    def eta_dynamics(self, eta, nu):
+    def create_eta_dynamics(self):
         """
         Computes the time derivative of position and quaternion orientation.
 
@@ -350,27 +413,53 @@ class BlueROV():
         Returns:
             eta_dot: [ẋ, ẏ, ż, q̇0, q̇1, q̇2, q̇3]
         """
-        # Extract position and quaternion
-        q = eta[3:7]  # [q0, q1, q2, q3] where q0 is scalar part
-        q = q/self.math['norm'](q)
+        if not hasattr(self, '_eta_dynamics_sym'):
+            eta = self.iX.sym('eta', 7)
+            nu = self.iX.sym('nu', 6)
+            # Extract position and quaternion
+            q = eta[3:7]  # [q0, q1, q2, q3] where q0 is scalar part
+            q = q/cs.norm_2(q)
 
-        # Convert quaternion to DCM for position kinematics
-        C = self.math['quaternion_to_dcm'](q)
+            # Convert quaternion to DCM for position kinematics
+            C = quaternion_to_dcm_cs(q)
 
-        # Position dynamics: ṗ = C * v
-        pos_dot = self.math['matmul'](C, nu[0:3])
+            # Position dynamics: ṗ = C * v
+            pos_dot = C @ nu[0:3]
 
-        ## From Fossen 2021, eq. 2.78:
-        om = nu[3:6]  # Angular velocity
-        q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
-        T_q_n_b = 0.5 * self.math['array']([
-                                 [-q1, -q2, -q3],
-                                 [q0, -q3, q2],
-                                 [q3, q0, -q1],
-                                 [-q2, q1, q0]
-                                 ])
-        q_dot = self.math['matmul'](T_q_n_b, om) + \
-            self.gamma/2 * (1 - self.math['matmul'](q.T, q)) * q
+            ## From Fossen 2021, eq. 2.78:
+            om = nu[3:6]  # Angular velocity
+            q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
+            # T_q_n_b = 0.5 * self.iX([
+            #                         [-q1, -q2, -q3],
+            #                         [q0, -q3, q2],
+            #                         [q3, q0, -q1],
+            #                         [-q2, q1, q0]
+            #                         ])
+            T_q_n_b = self.iX.zeros(4,3)
+            T_q_n_b[0, 0] = -0.5*q1
+            T_q_n_b[0, 1] = -0.5*q2
+            T_q_n_b[0, 2] = -0.5*q3
+            T_q_n_b[1, 0] = 0.5*q0
+            T_q_n_b[1, 1] = -0.5*q3
+            T_q_n_b[1, 2] = 0.5*q2
+            T_q_n_b[2, 0] = 0.5*q3
+            T_q_n_b[2, 1] = 0.5*q0
+            T_q_n_b[2, 2] = -0.5*q1
+            T_q_n_b[3, 0] = -0.5*q2
+            T_q_n_b[3, 1] = 0.5*q1
+            T_q_n_b[3, 2] = 0.5*q0
 
-        return self.math['concatenate']([pos_dot, q_dot])
+            q_dot = cs.mtimes(T_q_n_b, om) + self.gamma/2 * (1 - q.T @ q) * q
+
+            self._eta_dynamics_sym = cs.Function('eta_dynamics', [eta, nu], 
+                [
+                    cs.vertcat(pos_dot, q_dot)
+                ]
+            )
+    def calculate_eta_dynamics(self, eta, nu):
+        if isinstance(eta, np.ndarray):
+            return np.array(self._eta_dynamics_sym(eta, nu)).reshape((7,))
+        else:
+            return self._eta_dynamics_sym(eta, nu)
+
 
