@@ -1,16 +1,22 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import numpy as np
-
-from smarc_modelling.vehicles import *
-from smarc_modelling.lib import *
-from smarc_modelling.vehicles.BlueROV import BlueROV
-from smarc_modelling.vehicles.SAM import SAM
-
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import mpl_toolkits.mplot3d.axes3d as p3
 
 from scipy.spatial.transform import Rotation as R
+
+import os
+import sys
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../..'))
+sys.path.insert(0, parent_dir)
+from Utilities.smarc_modelling.src.smarc_modelling.vehicles import *
+from Utilities.smarc_modelling.src.smarc_modelling.lib import *
+from Utilities.smarc_modelling.src.smarc_modelling.vehicles.BlueROV import BlueROV
+from Utilities.smarc_modelling.src.smarc_modelling.vehicles.SAM import SAM
 
 matplotlib.use('TkAgg')  # or 'Qt5Agg', depending on what you have installed
 
