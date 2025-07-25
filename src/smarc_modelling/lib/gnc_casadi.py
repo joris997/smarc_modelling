@@ -170,3 +170,8 @@ def quaternion_to_angles_cs(quat):
         phi = cs.atan2(2 * (q0*q1 + q2*q3), 1 - 2 * (q1**2 + q2**2))
         return cs.vertcat(psi, theta, phi)
         # return psi, theta, phi
+
+if __name__ == "__main__":
+    q = cs.MX([1, 0, 0, 0])  # Example quaternion
+    euler = quaternion_to_angles_cs(q)
+    print("Euler angles (psi, theta, phi):", euler)

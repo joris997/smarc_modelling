@@ -90,7 +90,7 @@ class BlueROV():
 
         # Constants
         self.p_OC_O = self.iX([0., 0., 0.])  # Measurement frame C in CO (O)
-        self.D2R = cs.sqrt(math.pi / 180)  # Degrees to radians
+        self.D2R = math.pi / 180  # Degrees to radians
         self.rho_w = self.rho = 1026  # Water density (kg/m³)
         self.g = 9.81  # Gravity acceleration (m/s²)
 
@@ -230,6 +230,7 @@ class BlueROV():
         if not hasattr(self, '_dynamics_sym'):
             self.create_dynamics()
         if isinstance(x, np.ndarray):
+            self.calculate_fx(x)
             return np.array(self._dynamics_sym(x, u)).reshape((13,))
         else:
             return self._dynamics_sym(x, u)
@@ -264,6 +265,12 @@ class BlueROV():
         nu = x[7:13]
         nu_r, euler = self.calculate_system_state(eta, nu)
         if isinstance(x, np.ndarray):
+            print(f"\n\nx: {x}")
+            print(f"nu_r: {nu_r}")
+            print(f"euler: {euler}")
+            print(f"C: {np.array([self.calculate_C(nu_r)])}")
+            print(f"D: {np.array([self.calculate_D(nu_r)])}")
+            print(f"g: {np.array([self.calculate_g(euler)])}")
             return np.array(self._fx_sym(eta, nu, nu_r, euler)).reshape((13,))
         else:
             return self._fx_sym(eta, nu, nu_r, euler)
@@ -351,14 +358,14 @@ class BlueROV():
         nu_r_sym = self.iX.sym('nu_r', 6)
         self._D_sym = cs.Function('D', [nu_r_sym],
             [
-                2*cs.diag(cs.vertcat(
+                cs.diag(cs.vertcat(
                     self.Xuu * cs.fabs(nu_r_sym[0]),
                     self.Yvv * cs.fabs(nu_r_sym[1]),
                     self.Zww * cs.fabs(nu_r_sym[2]),
                     self.Kpp * cs.fabs(nu_r_sym[3]),
                     self.Mqq * cs.fabs(nu_r_sym[4]),
                     self.Nrr * cs.fabs(nu_r_sym[5])
-                ))
+                )) + self.D_lin
             ]
         )
     def calculate_D(self, nu_r):
