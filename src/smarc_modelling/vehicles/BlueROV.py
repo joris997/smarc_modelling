@@ -265,12 +265,12 @@ class BlueROV():
         nu = x[7:13]
         nu_r, euler = self.calculate_system_state(eta, nu)
         if isinstance(x, np.ndarray):
-            print(f"\n\nx: {x}")
-            print(f"nu_r: {nu_r}")
-            print(f"euler: {euler}")
-            print(f"C: {np.array([self.calculate_C(nu_r)])}")
-            print(f"D: {np.array([self.calculate_D(nu_r)])}")
-            print(f"g: {np.array([self.calculate_g(euler)])}")
+            # print(f"\n\nx: {x}")
+            # print(f"nu_r: {nu_r}")
+            # print(f"euler: {euler}")
+            # print(f"C: {np.array([self.calculate_C(nu_r)])}")
+            # print(f"D: {np.array([self.calculate_D(nu_r)])}")
+            # print(f"g: {np.array([self.calculate_g(euler)])}")
             return np.array(self._fx_sym(eta, nu, nu_r, euler)).reshape((13,))
         else:
             return self._fx_sym(eta, nu, nu_r, euler)
