@@ -152,26 +152,39 @@ class BlueROV():
         self.M = self.MRB + self.MA
         self.Minv = cs.inv(self.M)
 
-        self.C = self.iX.zeros((6,6))
-
-        self.D = self.iX.zeros((6,6))
         self.D_lin = cs.diag(self.iX([self.Xu, self.Yv, self.Zw, self.Kp, self.Mq, self.Nr]))
         self.D_nl = self.iX.zeros((6,6))
 
         self.gamma = 100 # Scaling factor for numerical stability of quaternion differentiation
         
         self.x_prev = None  # Old state vector for numerical integration
-        self.U = HyperRectangle(np.array([-85, -85, -120, -26, -14, -22]),
-                                np.array([85, 85, 120, 26, 14, 22]))
-        
+        self.U = HyperRectangle(
+            np.array([-85, -85, -120, -26, -14, -22]),
+            np.array([85, 85, 120, 26, 14, 22])
+        )
+
         self.create_dynamics()
         self.create_C()
         self.create_D()
         self.create_g()
         self.create_eta_dynamics()
         self.create_system_state()
+        
         self.create_fx()
         self.create_gx()
+        self.create_cx()
+
+        # TODO: Deal with the fact that K and D are not of same dimension
+        # TODO: For bluerov, g(x) indices are not 1, this scaling might also
+        # TODO: need to appear in the disturbance mapping matrix cx
+        max_water_force = 1
+        max_water_torque = 5
+        self.D = HyperRectangle(
+            np.array(3*[-max_water_force] + 3*[-max_water_torque]),
+            np.array(3*[max_water_force] + 3*[max_water_torque])
+        )
+        self.create_K()
+        self.create_U_effective()
 
     def init_vehicle(self):
         """
@@ -184,6 +197,45 @@ class BlueROV():
             p_CSsg_O = self.iX([0., 0, 0.]),
             p_OC_O=self.p_OC_O
         )
+
+    
+    def create_K(self):
+        if not hasattr(self, '_K_sym'):
+            # Define symbolic variables
+            x = self.iX.sym('x', 13)  # state vector [eta, nu]
+            self._K_sym = cs.Function('K', [x],
+                [
+                    cs.pinv(self.calculate_gx(x)) @ self.calculate_cx(x)
+                ]
+            )
+    def calculate_K(self, x):
+        if not hasattr(self, '_K_sym'):
+            self.create_K()
+        if isinstance(x, np.ndarray):
+            return np.array(self._K_sym(x))
+        else:
+            return self._K_sym(x)
+        
+
+    def create_U_effective(self):
+        if not hasattr(self, '_U_effective_sym'):
+            # Define symbolic variables
+            x = self.iX.sym('x', 13)
+            self._U_effective_sym = cs.Function('U_effective', [x],
+                [
+                    self.U.lower_bounds - self.calculate_K(x) @ self.D.lower_bounds,
+                    self.U.upper_bounds - self.calculate_K(x) @ self.D.upper_bounds
+                ]
+            )
+    def calculate_U_effective(self, x):
+        if not hasattr(self, '_U_effective_sym'):
+            self.create_U_effective()
+        lb, ub = self._U_effective_sym(x)
+        if isinstance(x, np.ndarray):
+            return HyperRectangle(np.array(lb), np.array(ub))
+        else:
+            return HyperRectangle(lb, ub)
+
 
     def step(self, x, u, dt):
         """
@@ -265,15 +317,10 @@ class BlueROV():
         nu = x[7:13]
         nu_r, euler = self.calculate_system_state(eta, nu)
         if isinstance(x, np.ndarray):
-            # print(f"\n\nx: {x}")
-            # print(f"nu_r: {nu_r}")
-            # print(f"euler: {euler}")
-            # print(f"C: {np.array([self.calculate_C(nu_r)])}")
-            # print(f"D: {np.array([self.calculate_D(nu_r)])}")
-            # print(f"g: {np.array([self.calculate_g(euler)])}")
             return np.array(self._fx_sym(eta, nu, nu_r, euler)).reshape((13,))
         else:
             return self._fx_sym(eta, nu, nu_r, euler)
+
 
     def create_gx(self):
         """
@@ -300,6 +347,27 @@ class BlueROV():
         else:
             return self._gx_sym(x)
 
+
+    def create_cx(self):
+        if not hasattr(self, '_cx_sym'):
+            p = self.iX.sym('p', 3)
+            q = self.iX.sym('q', 4)
+            v = self.iX.sym('v', 3)
+            w = self.iX.sym('w', 3)
+            cx = self.iX.zeros((13,6))  # Control input matrix for the BlueROV
+            cx[7:13, :] = self.iX.eye(6)  # The last 6 rows are the identity matrix for nu
+            self._cx_sym = cs.Function('cx', [p, q, v, w],
+                [
+                    cx
+                ]
+            )
+    def calculate_cx(self, x):
+        p, q, v, w = x[0:3], x[3:7], x[7:10], x[10:13]
+        if isinstance(p, np.ndarray):
+            return np.array(self._cx_sym(p, q, v, w))
+        else:
+            return self._cx_sym(p, q, v, w)
+        
 
     def create_system_state(self):
         """
