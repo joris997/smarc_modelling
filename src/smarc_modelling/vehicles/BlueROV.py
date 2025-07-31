@@ -275,17 +275,46 @@ class BlueROV():
         u_sym = self.iX.sym('u', 6)
         self._dynamics_sym = cs.Function('dynamics', [x_sym, u_sym],
             [
-                self.calculate_fx(x_sym) + self.calculate_gx(x_sym) @ u_sym 
+                self.calculate_fx(x_sym) + self.calculate_gx(x_sym) @ u_sym
             ]
         )
     def calculate_dynamics(self, x, u): 
         if not hasattr(self, '_dynamics_sym'):
             self.create_dynamics()
         if isinstance(x, np.ndarray):
-            self.calculate_fx(x)
             return np.array(self._dynamics_sym(x, u)).reshape((13,))
         else:
             return self._dynamics_sym(x, u)
+        
+    def create_disturbed_dynamics(self):
+        """
+        Main disturbed dynamics function for integrating the complete AUV state.
+
+        Args:
+            t: Current time
+            x: state space vector with [eta, nu, u]
+            u_ref: control inputs as [x_vbs, x_lcg, delta_s, delta_r, rpm1, rpm2]
+
+        Returns:
+            state_vector_dot: Time derivative of complete state vector
+        """
+        x_sym = self.iX.sym('x', 13)
+        u_sym = self.iX.sym('u', 6)
+        fd_sym = self.iX.sym('fd', 3)  # Force disturbance
+        td_sym = self.iX.sym('td', 3)  # Torque disturbance
+        self._disturbed_dynamics_sym = cs.Function('disturbed_dynamics', [x_sym, u_sym, fd_sym, td_sym],
+            [
+                self.calculate_fx(x_sym) + self.calculate_gx(x_sym) @ u_sym + \
+                    self.calculate_cx(x_sym) @ cs.vertcat(fd_sym, td_sym)  # Dynamics
+            ]
+        )
+    def calculate_disturbed_dynamics(self, x, u, fd, td):
+        if not hasattr(self, '_disturbed_dynamics_sym'):
+            self.create_disturbed_dynamics()
+        if isinstance(x, np.ndarray):
+            return np.array(self._disturbed_dynamics_sym(x, u, fd, td)).reshape((13,))
+        else:
+            return self._disturbed_dynamics_sym(x, u, fd, td)
 
 
     def create_fx(self):
