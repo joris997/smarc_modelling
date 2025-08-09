@@ -83,7 +83,7 @@ class BlueROV():
             dt=0.02,
             V_current=0,
             beta_current=0,
-            iX=cs.SX
+            iX:cs.SX|cs.MX=cs.SX
     ):
         self.dt = dt # Sim time step, necessary for evaluation of the actuator dynamics
         self.iX = iX
