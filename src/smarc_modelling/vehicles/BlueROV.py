@@ -163,8 +163,8 @@ class BlueROV():
         #     np.array([85, 85, 120, 26, 14, 22])
         # )
         self.U = HyperRectangle(
-            0.5*np.array([-85, -85, -120, -26, -14, -22]),
-            0.5*np.array([85, 85, 120, 26, 14, 22])
+            np.array([-85, -85, -120, -26, -14, -22]),
+            np.array([85, 85, 120, 26, 14, 22])
         )
 
         self.create_dynamics()
