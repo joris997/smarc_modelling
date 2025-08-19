@@ -158,9 +158,13 @@ class BlueROV():
         self.gamma = 100 # Scaling factor for numerical stability of quaternion differentiation
         
         self.x_prev = None  # Old state vector for numerical integration
+        # self.U = HyperRectangle(
+        #     np.array([-85, -85, -120, -26, -14, -22]),
+        #     np.array([85, 85, 120, 26, 14, 22])
+        # )
         self.U = HyperRectangle(
-            np.array([-85, -85, -120, -26, -14, -22]),
-            np.array([85, 85, 120, 26, 14, 22])
+            0.5*np.array([-85, -85, -120, -26, -14, -22]),
+            0.5*np.array([85, 85, 120, 26, 14, 22])
         )
 
         self.create_dynamics()
@@ -514,7 +518,7 @@ class BlueROV():
         C = quaternion_to_dcm_cs(q)
 
         # Position dynamics: ṗ = C * v
-        pos_dot = C @ nu[0:3]
+        pos_dot = nu[0:3]#C @ nu[0:3]
 
         ## From Fossen 2021, eq. 2.78:
         om = nu[3:6]  # Angular velocity
