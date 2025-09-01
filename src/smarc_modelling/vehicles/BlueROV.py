@@ -43,6 +43,8 @@ from scipy.linalg import block_diag
 from Utilities.smarc_modelling.src.smarc_modelling.lib.gnc import *
 from Utilities.sets import HyperRectangle
 from Utilities.smarc_modelling.src.smarc_modelling.lib.gnc_casadi import *
+from Utilities.rotations import quat_mult, q_to_rot_mat_cs
+from Utilities.Robots import Robot
 
 class SolidStructure:
     """
@@ -66,7 +68,7 @@ class SolidStructure:
 
 
 # Class Vehicle
-class BlueROV():
+class BlueROV(Robot):
     """
     BlueROV()
         Integrates all subsystems of the BlueROV.
@@ -85,6 +87,7 @@ class BlueROV():
             beta_current=0,
             iX:cs.SX|cs.MX=cs.SX
     ):
+        super().__init__(n_x=13, n_u=6)
         self.dt = dt # Sim time step, necessary for evaluation of the actuator dynamics
         self.iX = iX
 
@@ -152,6 +155,8 @@ class BlueROV():
         self.M = self.MRB + self.MA
         self.Minv = cs.inv(self.M)
 
+        self.inertia = np.diag([self.Ix+self.Kdp, self.Iy+self.Mdq, self.Iz+self.Ndr])
+
         self.D_lin = cs.diag(self.iX([self.Xu, self.Yv, self.Zw, self.Kp, self.Mq, self.Nr]))
         self.D_nl = self.iX.zeros((6,6))
 
@@ -178,10 +183,7 @@ class BlueROV():
         self.create_gx()
         self.create_cx()
 
-        # TODO: Deal with the fact that K and D are not of same dimension
-        # TODO: For bluerov, g(x) indices are not 1, this scaling might also
-        # TODO: need to appear in the disturbance mapping matrix cx
-        max_water_force = 1
+        max_water_force = 20
         max_water_torque = 5
         self.D = HyperRectangle(
             np.array(3*[-max_water_force] + 3*[-max_water_torque]),
@@ -219,48 +221,51 @@ class BlueROV():
             return np.array(self._K_sym(x))
         else:
             return self._K_sym(x)
-        
+    
+
+    def create_sum_K_D(self):
+        if not hasattr(self, '_sum_K_D_sym'):
+            # Define symbolic variables
+            x = self.iX.sym('x', 13)
+            D = self.iX.sym('D', 6)
+            K = self.calculate_K(x)
+            self._sum_K_D_sym = cs.Function('sum_K_D', [x, D],
+                [
+                    cs.sum1(K[0,:] @ D),
+                    cs.sum1(K[1,:] @ D),
+                    cs.sum1(K[2,:] @ D),
+                    cs.sum1(K[3,:] @ D),
+                    cs.sum1(K[4,:] @ D),
+                    cs.sum1(K[5,:] @ D)
+                ]
+            )
+    def calculate_sum_K_D(self, x, D):
+        if not hasattr(self, '_sum_K_D_sym'):
+            self.create_sum_K_D()
+        if isinstance(x, np.ndarray) and isinstance(D, np.ndarray):
+            return np.array(self._sum_K_D_sym(x, D)).reshape((6,))
+        else:
+            return self._sum_K_D_sym(x, D)
 
     def create_U_effective(self):
         if not hasattr(self, '_U_effective_sym'):
             # Define symbolic variables
             x = self.iX.sym('x', 13)
-            self._U_effective_sym = cs.Function('U_effective', [x],
+            alpha = self.iX.sym('alpha', 1)
+            self._U_effective_sym = cs.Function('U_effective', [x, alpha],
                 [
-                    self.U.lower_bounds - self.calculate_K(x) @ self.D.lower_bounds,
-                    self.U.upper_bounds - self.calculate_K(x) @ self.D.upper_bounds
+                    self.U.lower_bounds - alpha*self.calculate_K(x) @ self.D.lower_bounds,
+                    self.U.upper_bounds - alpha*self.calculate_K(x) @ self.D.upper_bounds
                 ]
             )
-    def calculate_U_effective(self, x):
+    def calculate_U_effective(self, x, alpha=1):
         if not hasattr(self, '_U_effective_sym'):
             self.create_U_effective()
-        lb, ub = self._U_effective_sym(x)
-        if isinstance(x, np.ndarray):
+        lb, ub = self._U_effective_sym(x, alpha)
+        if isinstance(x, np.ndarray) and isinstance(alpha, (int, float)):
             return HyperRectangle(np.array(lb), np.array(ub))
         else:
             return HyperRectangle(lb, ub)
-
-
-    def step(self, x, u, dt):
-        """
-        Naive step integration with a custom time step
-        Args:
-            x: state space vector with [eta, nu]
-            u: control inputs as [x_vbs, x_lcg, delta_s, delta_r, rpm1, rpm2]
-            dt: time step for integration
-
-        Returns:
-            x_next: state space vector at next time step
-        """
-        if self.x_prev is None:
-            self.x_prev = x
-        # Calculate the dynamics
-        x_dot = self.calculate_fx(x) + self.calculate_gx(x)@u #self.dynamics(x, u)
-        # Update the state using Euler integration
-        x_next = self.x_prev + x_dot * dt
-        # Update the previous state for the next step
-        self.x_prev = x_next
-        return x_next
 
 
     def create_dynamics(self):
@@ -277,9 +282,15 @@ class BlueROV():
         """
         x_sym = self.iX.sym('x', 13)
         u_sym = self.iX.sym('u', 6)
+        x_sym_norm = cs.vertcat(
+            x_sym[0:3],
+            x_sym[3:7] / cs.norm_2(x_sym[3:7]),
+            x_sym[7:10],
+            x_sym[10:13]
+        )
         self._dynamics_sym = cs.Function('dynamics', [x_sym, u_sym],
             [
-                self.calculate_fx(x_sym) + self.calculate_gx(x_sym) @ u_sym
+                self.calculate_fx(x_sym_norm) + self.calculate_gx(x_sym_norm) @ u_sym
             ]
         )
     def calculate_dynamics(self, x, u): 
@@ -334,12 +345,24 @@ class BlueROV():
         nu_sym = self.iX.sym('nu', 6)
         nu_r_sym = self.iX.sym('nu_r', 6)
         euler = self.iX.sym('euler', 3)
+
+        w_cross = cs.vertcat(
+            cs.horzcat(0, -nu_sym[5], nu_sym[4]),
+            cs.horzcat(nu_sym[4], 0, -nu_sym[3]),
+            cs.horzcat(-nu_sym[4], nu_sym[3], 0)
+        )
+
         self._fx_sym = cs.Function('fx', [eta_sym, nu_sym, nu_r_sym, euler],
             [
                 cs.vertcat(
                     self.calculate_eta_dynamics(eta_sym, nu_sym),
                     self.Minv @ (-cs.mtimes(self.calculate_C(nu_r=nu_r_sym), nu_r_sym) - \
                                     cs.mtimes(self.calculate_D(nu_r=nu_r_sym), nu_r_sym) - self.calculate_g(euler=euler))
+                    # #! test
+                    # # self.iX.zeros(6,1)
+                    # #! test
+                    # self.iX.zeros(3,1),
+                    # -self.Minv[3:6,3:6] @ cs.mtimes(w_cross, cs.mtimes(self.M[3:6,3:6], nu_sym[3:6]))
                 )
             ]
         )
@@ -367,8 +390,17 @@ class BlueROV():
         self._gx_sym = cs.Function('gx', [x_sym],
             [
                 cs.vertcat(
-                    self.iX.zeros(7,6),  # No control inputs for eta
+                    self.iX.zeros((3, 6)),
+                    self.iX.zeros((4, 6)),
                     self.Minv  # The control input matrix is the inverse of the mass matrix
+                    # #! Test
+                    # cs.horzcat(
+                    #     q_to_rot_mat_cs(x_sym[3:7])/self.m,
+                    #     self.iX.zeros((3, 3))),
+                    # cs.horzcat(
+                    #     self.iX.zeros((3, 3)),
+                    #     self.Minv[3:6, 3:6]
+                    # )
                 )
             ]
         )
@@ -388,7 +420,9 @@ class BlueROV():
             v = self.iX.sym('v', 3)
             w = self.iX.sym('w', 3)
             cx = self.iX.zeros((13,6))  # Control input matrix for the BlueROV
-            cx[7:13, :] = self.iX.eye(6)  # The last 6 rows are the identity matrix for nu
+            cx[7:10, 0:3] = q_to_rot_mat_cs(q).T@self.Minv[0:3,0:3]
+            cx[10:13, 3:6] = self.Minv[3:6,3:6]
+            # cx[7:13, 0:6] = self.Minv  # The last 6 rows are the identity matrix for nu
             self._cx_sym = cs.Function('cx', [p, q, v, w],
                 [
                     cx
@@ -510,44 +544,48 @@ class BlueROV():
         """
         eta = self.iX.sym('eta', 7)
         nu = self.iX.sym('nu', 6)
-        # Extract position and quaternion
-        q = eta[3:7]  # [q0, q1, q2, q3] where q0 is scalar part
-        q = q/cs.norm_2(q)
+        # # Extract position and quaternion
+        # q = eta[3:7]  # [q0, q1, q2, q3] where q0 is scalar part
+        # q = q/cs.norm_2(q)
 
-        # Convert quaternion to DCM for position kinematics
-        C = quaternion_to_dcm_cs(q)
+        # # Convert quaternion to DCM for position kinematics
+        # C = quaternion_to_dcm_cs(q)
 
-        # Position dynamics: ṗ = C * v
-        pos_dot = nu[0:3]#C @ nu[0:3]
+        # # Position dynamics: ṗ = C * v
+        # pos_dot = C @ nu[0:3]
 
-        ## From Fossen 2021, eq. 2.78:
-        om = nu[3:6]  # Angular velocity
-        q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
-        # T_q_n_b = 0.5 * self.iX([
-        #                         [-q1, -q2, -q3],
-        #                         [q0, -q3, q2],
-        #                         [q3, q0, -q1],
-        #                         [-q2, q1, q0]
-        #                         ])
-        T_q_n_b = self.iX.zeros(4,3)
-        T_q_n_b[0, 0] = -0.5*q1
-        T_q_n_b[0, 1] = -0.5*q2
-        T_q_n_b[0, 2] = -0.5*q3
-        T_q_n_b[1, 0] = 0.5*q0
-        T_q_n_b[1, 1] = -0.5*q3
-        T_q_n_b[1, 2] = 0.5*q2
-        T_q_n_b[2, 0] = 0.5*q3
-        T_q_n_b[2, 1] = 0.5*q0
-        T_q_n_b[2, 2] = -0.5*q1
-        T_q_n_b[3, 0] = -0.5*q2
-        T_q_n_b[3, 1] = 0.5*q1
-        T_q_n_b[3, 2] = 0.5*q0
+        # ## From Fossen 2021, eq. 2.78:
+        # om = nu[3:6]  # Angular velocity
+        # q0, q1, q2, q3 = q[0], q[1], q[2], q[3]
+        # # T_q_n_b = 0.5 * self.iX([
+        # #                         [-q1, -q2, -q3],
+        # #                         [q0, -q3, q2],
+        # #                         [q3, q0, -q1],
+        # #                         [-q2, q1, q0]
+        # #                         ])
+        # T_q_n_b = self.iX.zeros(4,3)
+        # T_q_n_b[0, 0] = -0.5*q1
+        # T_q_n_b[0, 1] = -0.5*q2
+        # T_q_n_b[0, 2] = -0.5*q3
+        # T_q_n_b[1, 0] = 0.5*q0
+        # T_q_n_b[1, 1] = -0.5*q3
+        # T_q_n_b[1, 2] = 0.5*q2
+        # T_q_n_b[2, 0] = 0.5*q3
+        # T_q_n_b[2, 1] = 0.5*q0
+        # T_q_n_b[2, 2] = -0.5*q1
+        # T_q_n_b[3, 0] = -0.5*q2
+        # T_q_n_b[3, 1] = 0.5*q1
+        # T_q_n_b[3, 2] = 0.5*q0
 
-        q_dot = cs.mtimes(T_q_n_b, om) + self.gamma/2 * (1 - q.T @ q) * q
+        # q_dot = cs.mtimes(T_q_n_b, om) + self.gamma/2 * (1 - q.T @ q) * q
 
+        #! Test
         self._eta_dynamics_sym = cs.Function('eta_dynamics', [eta, nu], 
             [
-                cs.vertcat(pos_dot, q_dot)
+                cs.blockcat([
+                    [q_to_rot_mat_cs(eta[3:7]) @ nu[0:3]],
+                    [0.5 * quat_mult(eta[3:7], cs.vertcat(0, nu[3:6]))]
+                ])
             ]
         )
     def calculate_eta_dynamics(self, eta, nu):
