@@ -114,8 +114,10 @@ class BlueROV(Robot):
 
         # Rigid-body mass matrself.iX expressed in CO
         self.m = self.ss.m_ss
-        self.p_OG_O = self.iX([0., 0., 0.])  # CG w.r.t. to the CO
-        self.p_OB_O = self.iX([0., 0., 0.])  # CB w.r.t. to the CO
+        # self.p_OG_O = self.iX([0., 0., 0.])  # CG w.r.t. to the CO
+        # self.p_OB_O = self.iX([0., 0., 0.])  # CB w.r.t. to the CO
+        self.p_OG_O = self.iX([0.07, 0., 0.05])  # CG w.r.t. to the CO
+        self.p_OB_O = self.iX([0., 0., 0.])
 
         # Weight and buoyancy
         self.W = self.m * self.g
@@ -199,7 +201,7 @@ class BlueROV(Robot):
         self.ss = SolidStructure(
             l_ss=0.46,
             d_ss=0.58,
-            m_ss=13.5,
+            m_ss=14.3+0.190, # was 13.5, scale said 14.3
             p_CSsg_O = self.iX([0., 0, 0.]),
             p_OC_O=self.p_OC_O
         )
