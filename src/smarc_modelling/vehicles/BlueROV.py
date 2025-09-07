@@ -116,7 +116,10 @@ class BlueROV(Robot):
         self.m = self.ss.m_ss
         # self.p_OG_O = self.iX([0., 0., 0.])  # CG w.r.t. to the CO
         # self.p_OB_O = self.iX([0., 0., 0.])  # CB w.r.t. to the CO
-        self.p_OG_O = self.iX([0.07, 0., 0.05])  # CG w.r.t. to the CO
+        # self.p_OG_O = self.iX([0.07, 0., 0.05])  # CG w.r.t. to the CO
+        self.p_OG_O = self.iX([0.0, 0., 0.05])  # CG w.r.t. to the CO
+        #! test
+        # self.p_OG_O = self.iX([-.15, 0., 0.05])
         self.p_OB_O = self.iX([0., 0., 0.])
 
         # Weight and buoyancy
@@ -165,13 +168,11 @@ class BlueROV(Robot):
         self.gamma = 100 # Scaling factor for numerical stability of quaternion differentiation
         
         self.x_prev = None  # Old state vector for numerical integration
-        # self.U = HyperRectangle(
-        #     np.array([-85, -85, -120, -26, -14, -22]),
-        #     np.array([85, 85, 120, 26, 14, 22])
-        # )
+
+        # Use half of the possible control to have the model behave properly
         self.U = HyperRectangle(
-            np.array([-85, -85, -120, -26, -14, -22]),
-            np.array([85, 85, 120, 26, 14, 22])
+            0.5*np.array([-85, -85, -120, -26, -14, -22]),
+            0.5*np.array([85, 85, 120, 26, 14, 22])
         )
 
         self.create_dynamics()
@@ -185,8 +186,8 @@ class BlueROV(Robot):
         self.create_gx()
         self.create_cx()
 
-        max_water_force = 20
-        max_water_torque = 5
+        max_water_force = 6.0
+        max_water_torque = 0.5
         self.D = HyperRectangle(
             np.array(3*[-max_water_force] + 3*[-max_water_torque]),
             np.array(3*[max_water_force] + 3*[max_water_torque])
