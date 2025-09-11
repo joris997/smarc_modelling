@@ -117,10 +117,9 @@ class BlueROV(Robot):
         # self.p_OG_O = self.iX([0., 0., 0.])  # CG w.r.t. to the CO
         # self.p_OB_O = self.iX([0., 0., 0.])  # CB w.r.t. to the CO
         # self.p_OG_O = self.iX([0.07, 0., 0.05])  # CG w.r.t. to the CO
-        self.p_OG_O = self.iX([0.0, 0., 0.05])  # CG w.r.t. to the CO
+        self.p_OG_O = self.iX([0.0, 0., 0.03])  # CG w.r.t. to the CO
         #! test
-        # self.p_OG_O = self.iX([-.15, 0., 0.05])
-        self.p_OB_O = self.iX([0., 0., 0.])
+        self.p_OB_O = self.iX([0., 0., 0.02])
 
         # Weight and buoyancy
         self.W = self.m * self.g
@@ -171,8 +170,8 @@ class BlueROV(Robot):
 
         # Use half of the possible control to have the model behave properly
         self.U = HyperRectangle(
-            0.5*np.array([-85, -85, -120, -26, -14, -22]),
-            0.5*np.array([85, 85, 120, 26, 14, 22])
+            0.25*np.array([-85, -85, -120, 3*-26, 3*-14, 3*-22]),
+            0.25*np.array([85, 85, 120,    3*26, 3*14, 3*22])
         )
 
         self.create_dynamics()
@@ -186,8 +185,8 @@ class BlueROV(Robot):
         self.create_gx()
         self.create_cx()
 
-        max_water_force = 6.0
-        max_water_torque = 0.5
+        max_water_force = 10.0
+        max_water_torque = 5.0
         self.D = HyperRectangle(
             np.array(3*[-max_water_force] + 3*[-max_water_torque]),
             np.array(3*[max_water_force] + 3*[max_water_torque])
@@ -423,7 +422,7 @@ class BlueROV(Robot):
             v = self.iX.sym('v', 3)
             w = self.iX.sym('w', 3)
             cx = self.iX.zeros((13,6))  # Control input matrix for the BlueROV
-            cx[7:10, 0:3] = q_to_rot_mat_cs(q).T@self.Minv[0:3,0:3]
+            cx[7:10, 0:3] = self.Minv[0:3,0:3]
             cx[10:13, 3:6] = self.Minv[3:6,3:6]
             # cx[7:13, 0:6] = self.Minv  # The last 6 rows are the identity matrix for nu
             self._cx_sym = cs.Function('cx', [p, q, v, w],
