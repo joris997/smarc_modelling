@@ -627,17 +627,16 @@ class SAM():
                                     # propellers that are supposed to cancel out the propeller induced
                                     # momentum
 
-            # Rescale the rotation from props
-            M_prop_i[0] *= self.thruster_rot_strength # Yaw
+            # np.cross already returns the moment in body [roll, pitch, yaw] order, and
+            # K_prop (axial torque) was added to M_prop_i[0] (roll).  tau's moment slots
+            # are [roll(p), pitch(q), yaw(r)], so scale in place — no axis swap.
+            M_prop_i[0] *= self.thruster_rot_strength            # Roll (axial + lever)
             M_prop_i[1] *= self.thruster_rot_strength * dir_flip # Pitch
-            M_prop_i[2] *= self.thruster_rot_strength # Roll
+            M_prop_i[2] *= self.thruster_rot_strength            # Yaw (rudder lever arm)
 
-            # Above equation return yaw, roll, pitch in other order than what the model uses
-            yaw = M_prop_i[0]
-            roll = M_prop_i[2]
-            M_prop_i[2] = yaw
-            M_prop_i[0] = roll
-
+            # NOTE: the previous swap (M[0]<->M[2]) routed the rudder's large yaw moment
+            # onto roll and left yaw nearly inert, so SAM could not turn; see
+            # test/test_sam_turn.py.  Kept in sync with SAM_torch._propeller_force.
             tau_prop_i = np.concatenate([F_prop_b, M_prop_i])
             tau_prop += tau_prop_i
 

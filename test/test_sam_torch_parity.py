@@ -97,10 +97,11 @@ def test_dynamics_parity_zero_throttle():
 
 
 def test_rollout_parallel_parity():
-    """The batched ``rollout_parallel`` reproduces the sequential numpy Euler rollout.
+    """The batched ``rollout_parallel`` reproduces the scalar single-state rollout.
 
-    Compares the torch-backed ``W_F`` against the original triple-loop over the scalar
-    ``_euler_rollout`` (kept as the numpy fallback), plus checks the residual arrays.
+    Both go through the same ``SAMTorch`` model now, so this validates the pack/unpack and
+    control-expansion of ``rollout_parallel`` against a per-triple ``robot.dynamics`` loop,
+    plus checks the residual arrays.
     """
     from classes.robots.sam import SAM as SAMRobot   # noqa: E402
     from classes.problem import Problem              # noqa: E402
@@ -139,15 +140,23 @@ def test_rollout_parallel_parity():
     W_U = np.ndarray((N - 1, Ms, K), dtype=np.object_)
     for i in range(N - 1):
         for j in range(Ms):
+            # [x_vbs%, x_lcg%, delta_s, delta_r, throttle] — VBS/LCG in a realistic
+            # in-range band so the rollout exercises the buoyancy/CG dynamics.
             cps = rng.uniform(-1.0, 1.0, size=(NU, u_order + 1))
+            cps[0] = rng.uniform(20.0, 80.0, size=u_order + 1)
+            cps[1] = rng.uniform(20.0, 80.0, size=u_order + 1)
             ctrl = Controls(cps=cps)
             for k in range(K):
                 W_U[i, j, k] = ctrl
 
     W_F, W_T, W_R, W_R_term = robot.rollout_parallel(W_X, W_U, robot.regions)
 
-    # Reference forward states via the sequential numpy rollout.
-    W_F_ref = robot._rollout_F_numpy(W_X, W_U, robot.dt, N - 1, Ms, K, NX)
+    # Reference forward states via the scalar single-state path (same torch model).
+    W_F_ref = np.zeros((N - 1, Ms, K, NX))
+    for i in range(N - 1):
+        for j in range(Ms):
+            for k in range(K):
+                W_F_ref[i, j, k], _ = robot.dynamics(W_X[i, j, k], W_U[i, j, k], robot.dt)
 
     err = np.max(np.abs(W_F - W_F_ref))
     assert err < 1e-8, f"rollout W_F parity error {err:.3e} too large"
@@ -156,6 +165,80 @@ def test_rollout_parallel_parity():
     # Stage residual cross-check on a couple of entries.
     assert np.allclose(W_R[0, 0, 0], robot._res_sqrt_R * W_U[0, 0, 0].cps.flatten())
     assert np.allclose(W_R_term[0, 0], robot._res_sqrt_Q * (W_X[N - 1, 0, 0, :2] - robot._res_goal))
+
+
+# ---------------------------------------------------------------------------
+# Learned damping (piml_type="pinn"): the optional state-dependent D path.
+# ---------------------------------------------------------------------------
+def test_pinn_D_matches_network():
+    """SAMTorch's batched D equals the per-row reference ``pinn_D_predict``."""
+    from smarc_modelling.piml.pinn.pinn import load_pinn_D, pinn_D_predict  # noqa: E402
+    import torch                                                            # noqa: E402
+
+    rng = np.random.default_rng(7)
+    n = 64
+    X = _random_states(n, rng)
+
+    sam_t = SAMTorch(dt=DT, device="cpu", piml_type="pinn")
+    feat = torch.cat([sam_t._t(X[:, 7:13]), sam_t._t(X[:, 13:19])], dim=1)
+    with torch.no_grad():
+        D_batch = sam_t.piml_model(feat).cpu().numpy()
+
+    ref_net = load_pinn_D()
+    err = max(np.max(np.abs(D_batch[i] - pinn_D_predict(ref_net, X[i, 7:13], X[i, 13:19])))
+              for i in range(n))
+    # Tolerance is the float32-network vs float64-dynamics rounding, not a logic gap.
+    assert err < 1e-2, f"batched PINN D disagrees with reference by {err:.3e}"
+
+    # D = A @ A.T must stay symmetric PSD for every row.
+    for D in D_batch:
+        assert np.max(np.abs(D - D.T)) < 1e-6
+        assert np.linalg.eigvalsh(0.5 * (D + D.T)).min() > -1e-6
+
+
+def test_pinn_equals_constant_at_zero_velocity():
+    """With zero body velocity (and no current) ``D @ nu_r = 0`` for both models, so
+    ``piml_type='pinn'`` and the default must give *bit-identical* dynamics — the flag
+    changes nothing but the damping term."""
+    rng = np.random.default_rng(8)
+    n = 32
+    X = _random_states(n, rng)
+    X[:, 7:13] = 0.0                                   # nu = 0 -> nu_r = 0
+    U = _random_controls(n, rng)
+
+    d_const = SAMTorch(dt=DT, device="cpu", piml_type=None).dynamics(X, U)
+    d_pinn = SAMTorch(dt=DT, device="cpu", piml_type="pinn").dynamics(X, U)
+    err = np.max(np.abs(d_const - d_pinn))
+    assert err < 1e-10, f"pinn/const dynamics differ at nu=0 by {err:.3e}"
+
+
+def test_pinn_changes_damping_under_motion():
+    """At nonzero velocity the learned D perturbs only the body-acceleration block;
+    kinematics (eta_dot) and actuator dynamics are untouched."""
+    rng = np.random.default_rng(9)
+    n = 48
+    X = _random_states(n, rng)                         # nonzero body velocities
+    U = _random_controls(n, rng)
+
+    d_const = SAMTorch(dt=DT, device="cpu", piml_type=None).dynamics(X, U)
+    d_pinn = SAMTorch(dt=DT, device="cpu", piml_type="pinn").dynamics(X, U)
+
+    assert np.allclose(d_const[:, 0:7], d_pinn[:, 0:7]), "kinematics must be unchanged"
+    assert np.allclose(d_const[:, 13:19], d_pinn[:, 13:19]), "actuator dyn unchanged"
+    assert np.max(np.abs(d_const[:, 7:13] - d_pinn[:, 7:13])) > 1e-3, \
+        "learned D should change nu_dot under motion"
+
+
+def test_pinn_rollout_finite():
+    """A batched Euler rollout with the learned D stays finite."""
+    rng = np.random.default_rng(10)
+    n = 16
+    X0 = _random_states(n, rng)
+    n_euler = 5
+    U_traces = np.repeat(_random_controls(n, rng)[:, None, :], n_euler, axis=1)
+    X = SAMTorch(dt=DT, device="cpu", piml_type="pinn").euler_rollout(
+        X0, U_traces, duration=0.3, n_euler=n_euler)
+    assert np.isfinite(X).all()
 
 
 if __name__ == "__main__":

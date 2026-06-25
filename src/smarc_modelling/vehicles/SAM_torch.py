@@ -27,6 +27,9 @@ SAM_torch.py:
    * The elaborate nonlinear ``SAM.calculate_D`` is **dead code**: ``SAM.dynamics``
      overwrites ``self.D`` with a constant diagonal right after calling it, so this
      port skips the nonlinear damping entirely and uses that constant ``D``.
+     Passing ``piml_type="pinn"`` instead swaps in the learned, state-dependent
+     ``D(nu, u)`` from ``SAM_PIML`` (a batched PINN forward pass); the rest of the
+     physics is unchanged.
    * Buoyancy ``B`` is constant (set once at init); only weight ``W = m*g`` varies
      with the VBS mass.
    * All scalar/geometry constants are *lifted* from a reference NumPy ``SAM``
@@ -63,7 +66,7 @@ class SAMTorch:
     """
 
     def __init__(self, dt=0.02, V_current=0.0, beta_current=0.0,
-                 device="auto", dtype=torch.float64):
+                 device="auto", dtype=torch.float64, piml_type=None):
         # Reference NumPy model: single source of truth for every constant.
         ref = _SAMNumpy(dt=dt, V_current=V_current, beta_current=beta_current)
 
@@ -166,6 +169,18 @@ class SAMTorch:
         D[4, 4] = self.damping_rot
         D[5, 5] = self.damping_rot
         self.D = t(D)                          # (6,6)
+
+        # --- optional learned damping (PINN) ---------------------------------
+        # ``piml_type="pinn"`` swaps the constant ``self.D`` above for a learned,
+        # state-dependent 6x6 ``D`` predicted per batch row from (nu, u) -- the same
+        # network the NumPy ``SAM_PIML`` uses (see piml/pinn/pinn.py).  The network
+        # is batched natively, so the whole bundle is one forward pass; it is cast to
+        # this model's device/dtype so it composes with the float64 dynamics.
+        self.piml_type = piml_type
+        self.piml_model = None
+        if self.piml_type == "pinn":
+            from smarc_modelling.piml.pinn.pinn import load_pinn_D
+            self.piml_model = load_pinn_D().to(device=self.device, dtype=self.dtype)
 
         self._pi = math.pi
 
@@ -307,10 +322,16 @@ class SAMTorch:
             base[:, 0] = base[:, 0] + sign_i * K_prop
 
             s = self.thruster_rot_strength
+            # base = r x F is already in body [roll, pitch, yaw] order, and K_prop
+            # (axial torque) was added to base[0] (roll).  The moment slots of tau are
+            # [.., roll(p), pitch(q), yaw(r)], so map straight through — no axis swap.
+            # (The previous [base2, base1, base0] reorder put the rudder's large
+            # lever-arm yaw moment onto roll and left yaw nearly inert; see
+            # test/test_sam_turn.py.)
             M_out = torch.stack([
-                s * base[:, 2],
-                s * dir_flip * base[:, 1],
                 s * base[:, 0],
+                s * dir_flip * base[:, 1],
+                s * base[:, 2],
             ], dim=1)
 
             tau = tau + torch.cat([F_prop_b, M_out], dim=1)
@@ -400,7 +421,13 @@ class SAMTorch:
 
         # --- accelerations ------------------------------------------------
         Cnu = torch.bmm(C, nu_r.unsqueeze(-1)).squeeze(-1)
-        Dnu = torch.einsum("ij,bj->bi", self.D, nu_r)
+        if self.piml_type == "pinn":
+            # Learned D(nu, u): feature is the absolute body velocity + actuators
+            # (matches SAM_PIML), applied to the current-relative velocity nu_r.
+            D_batch = self.piml_model(torch.cat([nu, u], dim=1))   # (b,6,6)
+            Dnu = torch.bmm(D_batch, nu_r.unsqueeze(-1)).squeeze(-1)
+        else:
+            Dnu = torch.einsum("ij,bj->bi", self.D, nu_r)
         rhs = tau - Cnu - Dnu - g_vec
         nu_dot = torch.bmm(Minv, rhs.unsqueeze(-1)).squeeze(-1)
 

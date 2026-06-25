@@ -16,3 +16,4 @@ c_generated_code/Makefile
 **/.vscode
 **/c_generated_code
 mpc_codegen
+src/smarc_modelling/checkpoints/

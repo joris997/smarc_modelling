@@ -59,7 +59,7 @@ import numpy as np
 import math
 from scipy.linalg import block_diag
 from smarc_modelling.lib.gnc import *
-from smarc_modelling.piml.pinn.pinn import init_pinn_model, pinn_predict
+from smarc_modelling.piml.pinn.pinn import load_pinn_D, pinn_D_predict
 
 
 class SolidStructure:
@@ -283,7 +283,7 @@ class SAM_PIML():
 
         if self.piml_type == "pinn":
             print(f" Physics Informed Neural Network model initialized")
-            self.piml_model = init_pinn_model("pinn.pt")
+            self.piml_model = load_pinn_D()
 
         # For white-box
         if piml_type == None:
@@ -537,7 +537,8 @@ class SAM_PIML():
             self.D[5,5] = self.damping_rot
 
         if self.piml_type == "pinn":
-            self.D = pinn_predict(self.piml_model, eta, nu, u)
+            # New-format PINN takes only body velocity + actuators (12-d input).
+            self.D = pinn_D_predict(self.piml_model, nu, u)
 
     def calculate_g(self):
         """

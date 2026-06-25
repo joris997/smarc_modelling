@@ -78,10 +78,13 @@ def _start_state(robot: SAM) -> np.ndarray:
 def _step(robot: SAM, u3, x0: np.ndarray, dur: float = None) -> np.ndarray:
     """One coarse-Euler rollout of duration ``dur`` under constant control ``u3``.
 
-    ``u3 = [delta_s, delta_r, throttle]`` with throttle in [-1, 1].
+    ``u3 = [delta_s, delta_r, throttle]`` (throttle in [-1, 1]); VBS/LCG are held at
+    their neutral fill to form the full 5-D control [x_vbs, x_lcg, delta_s, delta_r,
+    throttle].
     """
-    u3 = np.asarray(u3, dtype=float).reshape(robot.nu, 1)
-    ctrl = Controls(cps=u3)
+    u3 = np.asarray(u3, dtype=float)
+    u5 = np.array([robot.vbs_neutral, robot.lcg_neutral, u3[0], u3[1], u3[2]])
+    ctrl = Controls(cps=u5.reshape(robot.nu, 1))
     x_next, _ = robot.dynamics(x0.copy(), ctrl, robot.dt if dur is None else dur)
     return x_next
 

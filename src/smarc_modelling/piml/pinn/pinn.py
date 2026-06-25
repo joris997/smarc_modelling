@@ -2,12 +2,18 @@
 # -*- coding: utf-8 -*-
 
 # Imports
+import pathlib
 import torch
 import torch.nn as nn
 import numpy as np
-from smarc_modelling.piml.utils.utility_functions import load_data_from_bag
 import sys
-import matplotlib.pyplot as plt
+
+# ``load_data_from_bag`` (and matplotlib) are only needed for the training entry
+# point below; they pull in ROS (rosbag2_py), which is absent on inference-only
+# installs.  Import lazily so loading a trained model never requires ROS.
+if __name__ == "__main__":
+    from smarc_modelling.piml.utils.utility_functions import load_data_from_bag
+    import matplotlib.pyplot as plt
 
 
 class PINN(nn.Module):
@@ -92,6 +98,82 @@ def pinn_predict(model, eta, nu, u):
     # Get prediction
     D_pred = model(x).detach().numpy()
     return D_pred.squeeze()
+
+
+# ---------------------------------------------------------------------------
+# New-format checkpoint support (src/smarc_modelling/checkpoints/pinn.pt)
+# ---------------------------------------------------------------------------
+# The checkpoints shipped in ``checkpoints/`` were trained by a newer pipeline
+# than the ``PINN`` class above and are NOT compatible with it:
+#   * input is 12-d = concat(nu[6], u[6])  (eta dropped; damping is body-frame),
+#     min/max-normalised with the ``x_min`` / ``x_range`` saved in the checkpoint;
+#   * the trunk is N ReLU+dropout hidden layers feeding a *separate* output_layer
+#     (the old class used the last entry of ``self.layers`` as the output);
+#   * the 36 outputs reshape to A (6x6); D = A @ A.T is symmetric PSD by design.
+# ``PINN_D`` / ``load_pinn_D`` / ``pinn_D_predict`` load and run that format.
+
+_CHECKPOINTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "checkpoints"
+
+
+class PINN_D(nn.Module):
+    """Damping network matching the ``checkpoints/pinn.pt`` format.
+
+    Forward: x -> (x - x_min)/x_range -> [Linear, ReLU, Dropout] * n_hidden
+    -> output_layer (36) -> A (6x6) -> D = A @ A.T (symmetric PSD).
+    ``x_min`` / ``x_range`` are non-persistent buffers so the checkpoint's
+    ``state_dict`` (which stores them as separate top-level keys) loads strictly.
+    """
+
+    def __init__(self, in_dim, hidden, n_hidden, out_dim, dropout, x_min, x_range):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        self.layers.append(nn.Linear(in_dim, hidden))
+        for _ in range(n_hidden - 1):
+            self.layers.append(nn.Linear(hidden, hidden))
+        self.output_layer = nn.Linear(hidden, out_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer("x_min", x_min, persistent=False)
+        self.register_buffer("x_range", x_range, persistent=False)
+
+    def forward(self, x):
+        x = (x - self.x_min) / self.x_range
+        for layer in self.layers:
+            x = self.dropout(torch.relu(layer(x)))
+        A = self.output_layer(x).view(-1, 6, 6)
+        return A @ A.transpose(-2, -1)
+
+
+def load_pinn_D(path: str = None):
+    """Load a new-format PINN damping model, reconstructing its shape from the
+    checkpoint (so layer count / width are read off the saved weights)."""
+    if path is None:
+        path = _CHECKPOINTS_DIR / "pinn.pt"
+    ck = torch.load(str(path), weights_only=True)
+    sd = ck["state_dict"]
+
+    n_hidden = sum(1 for k in sd if k.startswith("layers.") and k.endswith(".weight"))
+    in_dim = sd["layers.0.weight"].shape[1]
+    hidden = sd["layers.0.weight"].shape[0]
+    out_dim = sd["output_layer.weight"].shape[0]
+
+    x_min = torch.as_tensor(ck["x_min"]).float()
+    x_range = torch.as_tensor(ck["x_range"]).float()
+
+    model = PINN_D(in_dim, hidden, n_hidden, out_dim,
+                   float(ck.get("dropout", 0.0)), x_min, x_range)
+    model.load_state_dict(sd)
+    model.eval()
+    return model
+
+
+def pinn_D_predict(model, nu, u):
+    """Predict the 6x6 damping matrix for body velocity ``nu`` and actuators ``u``."""
+    nu = np.asarray(nu, dtype=np.float32).flatten()
+    u = np.asarray(u, dtype=np.float32).flatten()
+    x = torch.as_tensor(np.concatenate([nu, u]), dtype=torch.float32).unsqueeze(0)
+    with torch.no_grad():
+        D_pred = model(x).squeeze(0).numpy()
+    return D_pred
 
 
 if __name__ == "__main__":
