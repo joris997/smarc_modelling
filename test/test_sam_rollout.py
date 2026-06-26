@@ -58,7 +58,7 @@ DS_TRIM = 0.085                              # stern-plane angle that zeroes pro
 
 
 def _make_robot() -> SAM:
-    return SAM(dt=0.6, n_euler=10, corridor_length=3.0)
+    return SAM(dt=0.6, n_integrator=10, corridor_length=3.0)
 
 
 def _knot_spacing(robot: SAM) -> float:
@@ -67,12 +67,12 @@ def _knot_spacing(robot: SAM) -> float:
 
 
 def _start_state(robot: SAM) -> np.ndarray:
-    """A at neutral orientation, zero velocity, VBS/LCG half-filled (cf. main_sam.py)."""
+    """A at neutral orientation, zero velocity, VBS/LCG half-filled, 15-D (cf. main_sam.py)."""
     return np.array([0.0, 0.0, robot.depth,
                      1.0, 0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
-                     50.0, 50.0, 0.0, 0.0, 0.0, 0.0])
+                     50.0, 50.0])
 
 
 def _step(robot: SAM, u3, x0: np.ndarray, dur: float = None) -> np.ndarray:
@@ -197,8 +197,8 @@ def _print_summary():
     spacing = _knot_spacing(robot)
 
     print("=" * 72)
-    print("SAM coarse-Euler rollout  (dt=%.2f, n_euler=%d, corridor=%.1f, N=%d)"
-          % (robot.dt, robot.n_euler, robot.corridor_length, N_KNOTS))
+    print("SAM coarse-Euler rollout  (dt=%.2f, n_integrator=%d, corridor=%.1f, N=%d)"
+          % (robot.dt, robot.n_integrator, robot.corridor_length, N_KNOTS))
     print("knot spacing the planner must cover per knot: %.4f m" % spacing)
     print("control[2] is now a normalised throttle s in [-1,1] (s=-1 off, s=+1 full)")
     print("=" * 72)

@@ -136,6 +136,15 @@ class PINN_D(nn.Module):
         self.register_buffer("x_range", x_range, persistent=False)
 
     def forward(self, x):
+        # Clamp the query to the training box [x_min, x_min + x_range] BEFORE
+        # normalising, so the net never extrapolates.  Off-distribution inputs (the
+        # high rpm / large body velocities the planner's sampling+rollout can reach)
+        # otherwise normalise far outside [0,1] and drive the ReLU trunk to a huge A,
+        # i.e. a huge *stiff* D — which makes the explicit forward-Euler rollout
+        # diverge (states -> 1e128) and poisons the trajectory bundle with NaN.  The
+        # clamp saturates the learned damping at its trained boundary (a no-op
+        # in-distribution); the full propeller thrust is unaffected.
+        x = torch.clamp(x, self.x_min, self.x_min + self.x_range)
         x = (x - self.x_min) / self.x_range
         for layer in self.layers:
             x = self.dropout(torch.relu(layer(x)))

@@ -1,8 +1,11 @@
 """Parity tests for the batched PyTorch SAM dynamics (``SAM_torch.SAMTorch``).
 
-The batched model must reproduce the scalar NumPy ``SAM.dynamics`` exactly (up to
-float64 round-off), and the batched ``rollout_parallel`` on the SAM robot wrapper must
-reproduce the per-(knot, sample, region) NumPy Euler rollout it replaces.
+``SAMTorch`` uses a reduced **15-D** state ``[eta(7) | nu(6) | act(2)=[vbs, lcg]]``,
+while the vendored NumPy ``SAM.dynamics`` integrates the full **19-D** state.  Parity
+is therefore checked on the shared 15 dims only: the dropped fin/rpm actuator-state
+derivatives have no analogue in the torch model (the fins/rpm act through the command).
+The batched ``rollout_parallel`` on the SAM robot wrapper must still reproduce the
+per-(knot, sample, region) scalar Euler rollout it replaces.
 
 Run::
 
@@ -30,6 +33,9 @@ from smarc_modelling.vehicles.SAM import SAM as SAMNumpy       # noqa: E402
 from smarc_modelling.vehicles.SAM_torch import SAMTorch        # noqa: E402
 
 DT = 0.02
+
+# The torch model is 15-D; the NumPy reference is 19-D.  Compare on the shared dims.
+NX_TORCH = 15
 
 
 def _random_states(n, rng):
@@ -71,9 +77,9 @@ def test_dynamics_parity():
     dX_ref = np.stack([ref.dynamics(X[i].copy(), U[i].copy()) for i in range(n)])
 
     sam_t = SAMTorch(dt=DT, device="cpu")
-    dX_t = sam_t.dynamics(X, U)
+    dX_t = sam_t.dynamics(X[:, :NX_TORCH], U)
 
-    err = np.max(np.abs(dX_ref - dX_t))
+    err = np.max(np.abs(dX_ref[:, :NX_TORCH] - dX_t))
     assert err < 1e-8, f"max dynamics parity error {err:.3e} too large"
 
 
@@ -90,9 +96,9 @@ def test_dynamics_parity_zero_throttle():
     dX_ref = np.stack([ref.dynamics(X[i].copy(), U[i].copy()) for i in range(n)])
 
     sam_t = SAMTorch(dt=DT, device="cpu")
-    dX_t = sam_t.dynamics(X, U)
+    dX_t = sam_t.dynamics(X[:, :NX_TORCH], U)
 
-    err = np.max(np.abs(dX_ref - dX_t))
+    err = np.max(np.abs(dX_ref[:, :NX_TORCH] - dX_t))
     assert err < 1e-8, f"max parity error (zero throttle) {err:.3e} too large"
 
 
@@ -107,9 +113,9 @@ def test_rollout_parallel_parity():
     from classes.problem import Problem              # noqa: E402
     from utils.controls import Controls              # noqa: E402
 
-    robot = SAMRobot(dt=0.6, n_euler=10, corridor_length=3.0)
+    robot = SAMRobot(dt=0.6, n_integrator=10, corridor_length=3.0)
     # Force the batched twin onto CPU so accumulated round-off stays at float64 level.
-    robot._sam_torch = SAMTorch(dt=robot.dt / robot.n_euler, device="cpu")
+    robot._sam_torch = SAMTorch(dt=robot.dt / robot.n_integrator, device="cpu")
 
     # Minimal Problem just to populate the residual weights.
     goal = np.zeros(robot.nx)
@@ -202,7 +208,7 @@ def test_pinn_equals_constant_at_zero_velocity():
     changes nothing but the damping term."""
     rng = np.random.default_rng(8)
     n = 32
-    X = _random_states(n, rng)
+    X = _random_states(n, rng)[:, :NX_TORCH]
     X[:, 7:13] = 0.0                                   # nu = 0 -> nu_r = 0
     U = _random_controls(n, rng)
 
@@ -217,14 +223,14 @@ def test_pinn_changes_damping_under_motion():
     kinematics (eta_dot) and actuator dynamics are untouched."""
     rng = np.random.default_rng(9)
     n = 48
-    X = _random_states(n, rng)                         # nonzero body velocities
+    X = _random_states(n, rng)[:, :NX_TORCH]           # nonzero body velocities
     U = _random_controls(n, rng)
 
     d_const = SAMTorch(dt=DT, device="cpu", piml_type=None).dynamics(X, U)
     d_pinn = SAMTorch(dt=DT, device="cpu", piml_type="pinn").dynamics(X, U)
 
     assert np.allclose(d_const[:, 0:7], d_pinn[:, 0:7]), "kinematics must be unchanged"
-    assert np.allclose(d_const[:, 13:19], d_pinn[:, 13:19]), "actuator dyn unchanged"
+    assert np.allclose(d_const[:, 13:15], d_pinn[:, 13:15]), "actuator dyn unchanged"
     assert np.max(np.abs(d_const[:, 7:13] - d_pinn[:, 7:13])) > 1e-3, \
         "learned D should change nu_dot under motion"
 
@@ -233,7 +239,7 @@ def test_pinn_rollout_finite():
     """A batched Euler rollout with the learned D stays finite."""
     rng = np.random.default_rng(10)
     n = 16
-    X0 = _random_states(n, rng)
+    X0 = _random_states(n, rng)[:, :NX_TORCH]
     n_euler = 5
     U_traces = np.repeat(_random_controls(n, rng)[:, None, :], n_euler, axis=1)
     X = SAMTorch(dt=DT, device="cpu", piml_type="pinn").euler_rollout(
@@ -248,5 +254,6 @@ if __name__ == "__main__":
     ref = SAMNumpy(dt=DT)
     dX_ref = np.stack([ref.dynamics(X[i].copy(), U[i].copy()) for i in range(256)])
     for dev in (["cpu", "cuda"] if __import__("torch").cuda.is_available() else ["cpu"]):
-        dX_t = SAMTorch(dt=DT, device=dev).dynamics(X, U)
-        print(f"[{dev}] max |dX_torch - dX_numpy| = {np.max(np.abs(dX_ref - dX_t)):.3e}")
+        dX_t = SAMTorch(dt=DT, device=dev).dynamics(X[:, :NX_TORCH], U)
+        print(f"[{dev}] max |dX_torch - dX_numpy| = "
+              f"{np.max(np.abs(dX_ref[:, :NX_TORCH] - dX_t)):.3e}")

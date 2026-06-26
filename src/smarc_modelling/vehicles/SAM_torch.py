@@ -10,18 +10,26 @@ SAM_torch.py:
    Graphs-of-Bundles planner needs the same ``dx = f(x, u)`` evaluated for a whole
    *batch* of (sample, region) states at once — see ``classes/robots/sam.py``,
    whose ``rollout_parallel`` otherwise loops over every knot, sample, region and
-   Euler substep in Python.  ``SAMTorch`` reproduces the exact same physics but with
-   a leading batch dimension ``b``, so the whole bundle is one tensor op.
+   Euler substep in Python.  ``SAMTorch`` reproduces the same physics but with a
+   leading batch dimension ``b``, so the whole bundle is one tensor op.
+
+   State reduction (vs the NumPy ``SAM.py``): this port uses a **15-D** state
+   ``[eta(7) | nu(6) | act(2)=[vbs, lcg]]``.  The fin/rpm actuator states of the
+   full 19-D model are dropped — they never drive forces through the *state* (the
+   propeller reads the command ``U_ref`` directly), so carrying them only added
+   trivial consensus dims to the GCS.  ``vbs``/``lcg`` are kept as proper
+   integrating states (they set buoyancy mass / CoG / inertia).
 
    The public surface is:
 
-       SAMTorch.dynamics(X, U_ref) -> dX          # X:(b,19) U_ref:(b,6) -> (b,19)
-       SAMTorch.euler_rollout(X0, U_ref_traces, duration, n_euler) -> X  # (b,19)
+       SAMTorch.dynamics(X, U_ref) -> dX          # X:(b,15) U_ref:(b,6) -> (b,15)
+       SAMTorch.euler_rollout(X0, U_ref_traces, duration, n_euler) -> X  # (b,15)
 
    Both accept NumPy arrays (or torch tensors) and return NumPy arrays.
 
-   Parity notes — this is a *faithful* re-implementation, validated row-by-row
-   against ``SAM.dynamics`` to < 1e-8 (see
+   Parity notes — the eta/nu/[vbs,lcg] physics is a faithful re-implementation of
+   ``SAM.dynamics`` (originally validated row-by-row to < 1e-8; the 15-D reduction
+   only drops the fin/rpm state derivatives — see
    ``classes/robots/smarc_modelling/test/test_sam_torch_parity.py``):
 
    * The elaborate nonlinear ``SAM.calculate_D`` is **dead code**: ``SAM.dynamics``
@@ -41,6 +49,7 @@ Author: ported for the bundle-stl Graphs-of-Bundles pipeline.
 
 import math
 
+from time import time
 import numpy as np
 import torch
 
@@ -341,16 +350,26 @@ class SAMTorch:
     # core batched dynamics (tensor in / tensor out)
     # ------------------------------------------------------------------
     def _dyn(self, X, U_ref):
-        """dx = f(x, u) on tensors.  X:(b,19), U_ref:(b,6) -> (b,19)."""
-        u = self._bound_actuators(X[:, 13:19])
-        u_ref = self._bound_actuators(U_ref)
+        """dx = f(x, u) on tensors.  X:(b,15), U_ref:(b,6) -> (b,15).
+
+        State layout: eta(7) | nu(6) | act(2) where act = [x_vbs, x_lcg].  Only
+        vbs/lcg are carried as states (they drive buoyancy mass / CoG / inertia);
+        the fin/rpm actuation enters through the command ``U_ref`` directly.
+        """
+        u = self._bound_actuators(X[:, 13:15])          # (b,2) [vbs, lcg] state
+        u_ref = self._bound_actuators(U_ref)            # (b,6) command
 
         eta = X[:, 0:7]
         nu = X[:, 7:13]
 
+        # create a time counter to keep track of how much time spent on inverses
+        t_inverses = 0.0
+
         # --- system state -------------------------------------------------
         q = eta[:, 3:7]
+        t0 = time()
         q = q / torch.linalg.norm(q, dim=1, keepdim=True)
+        t_inverses += time() - t0
         R = self._quat_to_dcm(q)
         psi, theta, phi = self._angles_from_dcm(R)
 
@@ -360,13 +379,15 @@ class SAMTorch:
         nu_c[:, 0] = u_c
         nu_c[:, 1] = v_c
         nu_r = nu - nu_c
+        t0 = time()
         U_speed = torch.linalg.norm(nu[:, 0:3], dim=1)
+        t_inverses += time() - t0
 
         x_vbs = (u[:, 0] / 100.0) * self.l_vbs_l
         m_vbs = self.rho_w * self._pi * self.r_vbs ** 2 * x_vbs
         m = self.m_ss + m_vbs + self.m_lcg
 
-        lcg_off = torch.zeros_like(u[:, 0:3])
+        lcg_off = torch.zeros(X.shape[0], 3, dtype=self.dtype, device=self.device)
         lcg_off[:, 0] = (u[:, 1] / 100.0) * self.l_lcg_l
         p_OLcg_O = self.p_OLcgPos_O.unsqueeze(0) + lcg_off            # (b,3)
 
@@ -407,7 +428,10 @@ class SAMTorch:
         MA = torch.diag_embed(MA_diag)
 
         M = MRB + MA
+        t0 = time()
         Minv = torch.linalg.inv(M)
+        t_inverses += time() - t0
+        # print(f"Time spent on inverses: {t_inverses:.6f} s")
 
         # --- Coriolis (constant D handled below) --------------------------
         C = self._m2c(MRB, nu_r) + self._m2c(MA, nu_r)
@@ -422,17 +446,22 @@ class SAMTorch:
         # --- accelerations ------------------------------------------------
         Cnu = torch.bmm(C, nu_r.unsqueeze(-1)).squeeze(-1)
         if self.piml_type == "pinn":
-            # Learned D(nu, u): feature is the absolute body velocity + actuators
-            # (matches SAM_PIML), applied to the current-relative velocity nu_r.
-            D_batch = self.piml_model(torch.cat([nu, u], dim=1))   # (b,6,6)
+            # Learned D(nu, u): feature is the body velocity + the 6-D actuator
+            # COMMAND u_ref (matches SAM_PIML's 12-D feature).  We feed the command
+            # rather than the actuator state: the state no longer carries fins/rpm,
+            # and for the fast-tracking actuators command ~= position, so D stays
+            # in-distribution.  Applied to the current-relative velocity nu_r.
+            D_batch = self.piml_model(torch.cat([nu, u_ref], dim=1))   # (b,6,6)
             Dnu = torch.bmm(D_batch, nu_r.unsqueeze(-1)).squeeze(-1)
         else:
             Dnu = torch.einsum("ij,bj->bi", self.D, nu_r)
         rhs = tau - Cnu - Dnu - g_vec
         nu_dot = torch.bmm(Minv, rhs.unsqueeze(-1)).squeeze(-1)
 
-        # --- actuator dynamics --------------------------------------------
-        u_dot = (u_ref - u) / self.dt
+        # --- actuator dynamics (vbs/lcg only) -----------------------------
+        # The 2 actuator states track their commands (u_ref[:, :2]) at the
+        # rate-limited slew; fins/rpm have no state, they act through u_ref.
+        u_dot = (u_ref[:, :2] - u) / self.dt            # (b,2)
         u_dot = u_dot.clone()
         u_dot[:, 0] = torch.clamp(u_dot[:, 0], -self.vbs_dot_max, self.vbs_dot_max)
         u_dot[:, 1] = torch.clamp(u_dot[:, 1], -self.lcg_dot_max, self.lcg_dot_max)
@@ -488,12 +517,12 @@ class SAMTorch:
 
         Parameters
         ----------
-        X     : (b, 19) states  [eta(7) | nu(6) | act(6)]
+        X     : (b, 15) states  [eta(7) | nu(6) | act(2)=[vbs, lcg]]
         U_ref : (b, 6)  controls [x_vbs, x_lcg, delta_s, delta_r, rpm1, rpm2]
 
         Returns
         -------
-        dX : (b, 19) numpy array of time derivatives.
+        dX : (b, 15) numpy array of time derivatives.
         """
         Xt = self._t(X)
         Ut = self._t(U_ref)
@@ -506,29 +535,61 @@ class SAMTorch:
 
         Parameters
         ----------
-        X0           : (b, 19)            initial states
+        X0           : (b, 15)            initial states
         U_ref_traces : (b, n_euler, 6)    per-substep expanded controls (u_ref)
-        duration     : float              integration horizon
+        duration     : float or (b,)      integration horizon (scalar or per-row)
         n_euler      : int                number of Euler substeps
 
         Returns
         -------
-        X : (b, 19) numpy array of forward-propagated states.  The 6 actuator dims
-            (13:19) are carried through unchanged (slaved to the control), exactly as
-            in the NumPy rollout.
+        X : (b, 15) numpy array of forward-propagated states.  The 2 actuator dims
+            (13:15) = [vbs, lcg] are proper states: they integrate (rate-limited)
+            toward the command and are NOT reset across the rollout.
         """
-        h = float(duration) / n_euler
+        # h: scalar duration -> (1,1); per-row array (b,) -> (b,1).  Broadcasts over
+        # (b, NX) in the Euler update and over the actuator term inside _dyn either way.
+        h = (self._t(duration) / n_euler).reshape(-1, 1)
         self.dt = h                          # drive actuator dynamics on the substep
         X = self._t(X0)
         U = self._t(U_ref_traces)
         with torch.no_grad():
             X = self._normalize_quat(X)
-            act_ref = X[:, 13:19].clone()
             for s in range(n_euler):
                 X = X + h * self._dyn(X, U[:, s, :])
                 X = self._normalize_quat(X)
-            X = X.clone()
-            X[:, 13:19] = act_ref
+        return X.cpu().numpy()
+    
+    def rk4_rollout(self, X0, U_ref_traces, duration, n_rk4):
+        """Batched RK4 rollout, mirroring ``sam.py._rk4_rollout``.
+
+        Parameters
+        ----------
+        X0           : (b, 15)            initial states
+        U_ref_traces : (b, n_rk4, 6)      per-substep expanded controls (u_ref)
+        duration     : float or (b,)      integration horizon (scalar or per-row)
+        n_rk4       : int                 number of RK4 substeps
+
+        Returns
+        -------
+        X : (b, 15) numpy array of forward-propagated states.  The 2 actuator dims
+            (13:15) = [vbs, lcg] are proper states: they integrate (rate-limited)
+            toward the command and are NOT reset across the rollout.
+        """
+        # h: scalar duration -> (1,1); per-row array (b,) -> (b,1).  Broadcasts over
+        # (b, NX) in the RK4 stages and over the actuator term inside _dyn either way.
+        h = (self._t(duration) / n_rk4).reshape(-1, 1)
+        self.dt = h                          # drive actuator dynamics on the substep
+        X = self._t(X0)
+        U = self._t(U_ref_traces)
+        with torch.no_grad():
+            X = self._normalize_quat(X)
+            for s in range(n_rk4):
+                k1 = self._dyn(X, U[:, s, :])
+                k2 = self._dyn(X + 0.5 * h * k1, U[:, s, :])
+                k3 = self._dyn(X + 0.5 * h * k2, U[:, s, :])
+                k4 = self._dyn(X + h * k3, U[:, s, :])
+                X = X + (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+                X = self._normalize_quat(X)
         return X.cpu().numpy()
 
     def _normalize_quat(self, X):

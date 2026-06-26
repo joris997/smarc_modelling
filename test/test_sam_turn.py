@@ -52,7 +52,7 @@ from classes.robots.sam import SAM            # noqa: E402
 from utils.controls import Controls           # noqa: E402
 from smarc_modelling.vehicles.SAM_torch import SAMTorch  # noqa: E402
 
-# State-vector indices (full 19-D SAM state).
+# State-vector indices (15-D SAM state: eta(7) | nu(6) | act(2)=[vbs, lcg]).
 QUAT = slice(3, 7)      # q0,q1,q2,q3 (q0 scalar)
 P_IDX = 10              # body roll rate  p
 Q_IDX = 11              # body pitch rate q
@@ -64,16 +64,16 @@ R_IDX = 12              # body yaw rate   r
 # ---------------------------------------------------------------------------
 def _make_robot(piml_type=None) -> SAM:
     """A SAM with the same geometry as examples/main_sam.py (Fossen D by default)."""
-    return SAM(dt=1.0, n_euler=50, corridor_length=15.0, piml_type=piml_type)
+    return SAM(dt=1.0, n_integrator=50, corridor_length=15.0, piml_type=piml_type)
 
 
 def _rest_state(robot: SAM) -> np.ndarray:
-    """Origin, identity quaternion, zero velocity, VBS/LCG half-filled, fins/rpm 0."""
+    """Origin, identity quaternion, zero velocity, VBS/LCG half-filled (15-D)."""
     return np.array([0.0, 0.0, robot.depth,
                      1.0, 0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
-                     50.0, 50.0, 0.0, 0.0, 0.0, 0.0])
+                     50.0, 50.0])
 
 
 def _u5(robot: SAM, delta_s=0.0, delta_r=0.0, throttle=-1.0, vbs=None, lcg=None):
@@ -97,7 +97,7 @@ def _accel(robot: SAM, u5, x0: np.ndarray) -> np.ndarray:
     isolate the commanded moment on each axis without integration mixing them.
     """
     u_ref = robot._expand_control_batch(np.asarray(u5, float)[None, :])   # (1,6)
-    dX = robot._sam_torch.dynamics(x0[None, :], u_ref)                    # (1,19)
+    dX = robot._sam_torch.dynamics(x0[None, :], u_ref)                    # (1,15)
     return dX[0]
 
 
@@ -203,7 +203,7 @@ def test_yaw_kinematics_consistent():
     rate off over a full dt) is negligible and the kinematic relation is clean.
     """
     robot = _make_robot()
-    short = SAM(dt=0.05, n_euler=5, corridor_length=15.0)
+    short = SAM(dt=0.05, n_integrator=5, corridor_length=15.0)
     short._sam_torch = robot._sam_torch        # reuse the model; only dt differs
     x0 = _rest_state(short)
     x0[R_IDX] = 0.05                           # small yaw rate, zero control
@@ -221,7 +221,7 @@ def test_yaw_axis_torch_scalar_parity():
     u5 = _u5(robot, delta_r=0.1, throttle=1.0)
     # Direct derivative and a 1-substep wrapper step should agree to high precision on r.
     rdot = _accel(robot, u5, x0)[R_IDX]
-    one_step = SAM(dt=robot.dt, n_euler=1, corridor_length=15.0)
+    one_step = SAM(dt=robot.dt, n_integrator=1, corridor_length=15.0)
     one_step._sam_torch = robot._sam_torch
     xn = _step(one_step, u5, x0)
     assert abs(xn[R_IDX] - rdot * robot.dt) < 1e-6
@@ -244,7 +244,7 @@ def _print_sweep(robot, x0, title):
 
 def _print_summary():
     print("=" * 96)
-    print("SAM turn diagnostics  (dt=1.0, n_euler=50, corridor=15.0)")
+    print("SAM turn diagnostics  (dt=1.0, n_integrator=50, corridor=15.0)")
     print("Axis probe at rest: r_dot = yaw accel (dX[12]), p_dot = roll accel (dX[10]).")
     print("A working rudder => |r_dot| >> |p_dot| once thrust is up.")
     print("=" * 96)
