@@ -73,7 +73,7 @@ def _rest_state(robot: SAM) -> np.ndarray:
                      1.0, 0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
-                     50.0, 50.0])
+                     0.5, 0.5])     # NORMALISED (SAM.ACT_SCALE)
 
 
 def _s_coast(robot: SAM) -> float:
@@ -114,7 +114,9 @@ def _accel(robot: SAM, u5, x0: np.ndarray) -> np.ndarray:
     isolate the commanded moment on each axis without integration mixing them.
     """
     u_ref = robot._expand_control_batch(np.asarray(u5, float)[None, :])   # (1,6)
-    dX = robot._sam_torch.dynamics(x0[None, :], u_ref)                    # (1,15)
+    # SAMTorch works in the vehicle's units, so the planner state's normalised VBS/LCG
+    # must be converted before bypassing the wrapper's rollout (see SAM.ACT_SCALE).
+    dX = robot._sam_torch.dynamics(robot.to_physical(x0[None, :]), u_ref)  # (1,15)
     return dX[0]
 
 
@@ -283,9 +285,9 @@ def _print_summary():
         print("  delta_s=%5.2f  q_dot(pitch)=%+.3e  r_dot(yaw)=%+.3e" % (ds, m["q_dot"], m["r_dot"]))
 
     print("\n-- VBS / LCG at full throttle: should be depth/pitch, not yaw --")
-    for vbs in [40.0, 50.0, 60.0]:
+    for vbs in [0.4, 0.5, 0.6]:      # NORMALISED (SAM.ACT_SCALE)
         m = _turn_metrics(robot, _u5(robot, vbs=vbs, throttle=1.0), x0)
-        print("  vbs=%5.1f  r_dot(yaw)=%+.3e" % (vbs, m["r_dot"]))
+        print("  vbs=%5.2f  r_dot(yaw)=%+.3e" % (vbs, m["r_dot"]))
 
     print("\n-- quaternion handling --")
     xq = _rest_state(robot); xq[QUAT] = _yaw_quat(0.2)

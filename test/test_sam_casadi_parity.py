@@ -89,8 +89,14 @@ def test_expand_control_matches_robot():
 
     robot = SAM(dt=2.5, n_integrator=5, scenario="L", piml_type=None, integrator="rk4")
     for s in np.linspace(-1, 1, 21):
-        c5 = np.array([50.0, 50.0, 0.05, -0.05, s])
-        ref = robot._expand_control_batch(c5[None])[0]
+        # The robot's 5-D control carries VBS/LCG NORMALISED (SAM.ACT_SCALE) and
+        # `_expand_control_batch` converts them to percent; the CasADi mirror takes
+        # percent directly.  Feed each its own units -- the map under test is the
+        # THROTTLE (dims 4,5), which is unaffected by the actuator rescale.
+        c5_norm = np.array([0.5, 0.5, 0.05, -0.05, s])
+        c5_pct = np.array([50.0, 50.0, 0.05, -0.05, s])
+        ref = robot._expand_control_batch(c5_norm[None])[0]
         got = np.asarray(SAMCasadiBundle.expand_control(
-            cs.DM(c5), robot.rpm_max, robot.rpm_rev_max, robot.rev_thrust_ratio)).ravel()
+            cs.DM(c5_pct), robot.rpm_max, robot.rpm_rev_max,
+            robot.rev_thrust_ratio)).ravel()
         assert np.abs(ref - got).max() < 1e-9, f"throttle map differs at s={s}: {ref} vs {got}"

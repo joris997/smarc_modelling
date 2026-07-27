@@ -89,7 +89,7 @@ def _start_state(robot: SAM) -> np.ndarray:
                      1.0, 0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0,
-                     50.0, 50.0])
+                     0.5, 0.5])     # NORMALISED (SAM.ACT_SCALE)
 
 
 def _step(robot: SAM, u3, x0: np.ndarray, dur: float = None) -> np.ndarray:

@@ -153,7 +153,7 @@ def bench_rollout_parallel(names, dtypes, compiles, integrators, quick):
                         q = rng.standard_normal((N, Ms, K, 4))
                         W_X[..., 3:7] = q / np.linalg.norm(q, axis=-1, keepdims=True)
                         W_X[..., 7:13] = rng.uniform(-0.5, 0.5, (N, Ms, K, 6))
-                        W_X[..., 13:15] = 50.0
+                        W_X[..., 13:15] = robot.vbs_neutral   # NORMALISED
                         W_U = np.ndarray((N - 1, Ms, K), dtype=object)
                         for i in range(N - 1):
                             for j in range(Ms):
