@@ -40,15 +40,15 @@ import sys
 import numpy as np
 
 #   .../bundle-stl/classes/robots/smarc_modelling/test/test_sam_turn.py
-#   parents[0]=test [1]=smarc_modelling [2]=robots [3]=classes [4]=bundle-stl
+#   parents[0]=test [1]=smarc_modelling [2]=robots [3]=utils [4]=bundle-stl
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-_SMARC_SRC = REPO_ROOT / "classes" / "robots" / "smarc_modelling" / "src"
+_SMARC_SRC = REPO_ROOT / "utils" / "robots" / "smarc_modelling" / "src"
 if str(_SMARC_SRC) not in sys.path:
     sys.path.insert(0, str(_SMARC_SRC))
 
-from classes.robots.sam import SAM            # noqa: E402
+from utils.robots.sam import SAM            # noqa: E402
 from utils.controls import Controls           # noqa: E402
 from smarc_modelling.vehicles.SAM_torch import SAMTorch  # noqa: E402
 
@@ -64,7 +64,7 @@ R_IDX = 12              # body yaw rate   r
 # ---------------------------------------------------------------------------
 def _make_robot(piml_type=None) -> SAM:
     """A SAM with the same geometry as examples/main_sam.py (Fossen D by default)."""
-    return SAM(dt=1.0, n_integrator=50, corridor_length=15.0, piml_type=piml_type)
+    return SAM(dt=1.0, n_integrator=50, leg_length=15.0, piml_type=piml_type)
 
 
 def _rest_state(robot: SAM) -> np.ndarray:
@@ -76,10 +76,27 @@ def _rest_state(robot: SAM) -> np.ndarray:
                      50.0, 50.0])
 
 
-def _u5(robot: SAM, delta_s=0.0, delta_r=0.0, throttle=-1.0, vbs=None, lcg=None):
-    """Full 5-D reduced control [x_vbs, x_lcg, delta_s, delta_r, throttle]."""
+def _s_coast(robot: SAM) -> float:
+    """The throttle that produces rpm = 0.
+
+    The throttle is BIPOLAR: ``s = -1`` is full REVERSE, not "off".  The coast point is
+    where the signed thrust proxy ``P(s)`` crosses zero (see ``SAM._expand_control_batch``
+    and the same helper in ``test_sam_rollout.py``); it is ≈ -0.818, not -1.
+    """
+    P_fwd = robot.rpm_max ** 2
+    P_rev = -(robot.rpm_rev_max ** 2) / robot.rev_thrust_ratio
+    return 2.0 * (-P_rev) / (P_fwd - P_rev) - 1.0
+
+
+def _u5(robot: SAM, delta_s=0.0, delta_r=0.0, throttle=None, vbs=None, lcg=None):
+    """Full 5-D reduced control [x_vbs, x_lcg, delta_s, delta_r, throttle].
+
+    ``throttle=None`` means COAST (rpm 0), which is what these tests want when they say
+    "off" — it used to be spelled ``-1.0``, but that is full reverse under the bipolar map.
+    """
     vbs = robot.vbs_neutral if vbs is None else vbs
     lcg = robot.lcg_neutral if lcg is None else lcg
+    throttle = _s_coast(robot) if throttle is None else throttle
     return np.array([vbs, lcg, delta_s, delta_r, throttle], dtype=float)
 
 
@@ -155,7 +172,7 @@ def test_rudder_authority_grows_with_thrust():
     """Yaw authority should be ~zero at rpm 0 and grow with throttle (thrust-vectoring)."""
     robot = _make_robot()
     x0 = _rest_state(robot)
-    yaw_off = abs(_turn_metrics(robot, _u5(robot, delta_r=0.1, throttle=-1.0), x0)["r_dot"])
+    yaw_off = abs(_turn_metrics(robot, _u5(robot, delta_r=0.1), x0)["r_dot"])
     yaw_full = abs(_turn_metrics(robot, _u5(robot, delta_r=0.1, throttle=1.0), x0)["r_dot"])
     assert yaw_off < 1e-4, f"rudder should be inert at rpm 0, got r_dot={yaw_off:.2e}"
     assert yaw_full > yaw_off, "yaw authority should increase with thrust"
@@ -192,7 +209,7 @@ def test_quaternion_heading_preserved_under_zero_control():
     robot = _make_robot()
     x0 = _rest_state(robot)
     x0[QUAT] = _yaw_quat(0.2)
-    xn = _step(robot, _u5(robot, throttle=-1.0), x0)
+    xn = _step(robot, _u5(robot), x0)
     assert abs(_euler_angles(xn[QUAT])[2] - 0.2) < 1e-3
 
 
@@ -203,11 +220,11 @@ def test_yaw_kinematics_consistent():
     rate off over a full dt) is negligible and the kinematic relation is clean.
     """
     robot = _make_robot()
-    short = SAM(dt=0.05, n_integrator=5, corridor_length=15.0)
+    short = SAM(dt=0.05, n_integrator=5, leg_length=15.0)
     short._sam_torch = robot._sam_torch        # reuse the model; only dt differs
     x0 = _rest_state(short)
     x0[R_IDX] = 0.05                           # small yaw rate, zero control
-    xn = _step(short, _u5(short, throttle=-1.0), x0)
+    xn = _step(short, _u5(short), x0)
     assert abs((_euler_angles(xn[QUAT])[2]) - 0.05 * short.dt) < 5e-4
 
 
@@ -221,7 +238,7 @@ def test_yaw_axis_torch_scalar_parity():
     u5 = _u5(robot, delta_r=0.1, throttle=1.0)
     # Direct derivative and a 1-substep wrapper step should agree to high precision on r.
     rdot = _accel(robot, u5, x0)[R_IDX]
-    one_step = SAM(dt=robot.dt, n_integrator=1, corridor_length=15.0)
+    one_step = SAM(dt=robot.dt, n_integrator=1, leg_length=15.0)
     one_step._sam_torch = robot._sam_torch
     xn = _step(one_step, u5, x0)
     assert abs(xn[R_IDX] - rdot * robot.dt) < 1e-6
@@ -272,9 +289,9 @@ def _print_summary():
 
     print("\n-- quaternion handling --")
     xq = _rest_state(robot); xq[QUAT] = _yaw_quat(0.2)
-    yaw_keep = _euler_angles(_step(robot, _u5(robot, throttle=-1.0), xq)[QUAT])[2]
+    yaw_keep = _euler_angles(_step(robot, _u5(robot), xq)[QUAT])[2]
     xr = _rest_state(robot); xr[R_IDX] = 0.05
-    dpsi_kin = _euler_angles(_step(robot, _u5(robot, throttle=-1.0), xr)[QUAT])[2]
+    dpsi_kin = _euler_angles(_step(robot, _u5(robot), xr)[QUAT])[2]
     print("  pre-yawed 0.200 rad, zero ctrl -> heading %.4f (drift %.1e)"
           % (yaw_keep, yaw_keep - 0.2))
     print("  body r=0.05, dt=1.0 -> dpsi %.4f (expect ~%.4f)" % (dpsi_kin, 0.05 * robot.dt))

@@ -24,10 +24,12 @@ SAM_casadi_bundle.py:
    ``SAM_torch.SAMTorch._dyn``; ``test_sam_casadi_parity.py`` asserts agreement to
    < 1e-9 on random states/controls.  If you change one, change the other.
 
-   IMPORTANT — ``dt`` is the INTEGRATOR SUBSTEP, not the knot horizon.  ``sam.py``
-   builds ``SAMTorch(dt=self.dt / self.n_integrator)`` and the actuator dynamics
-   divide by it (``u_dot = (u_ref - u)/dt``, then rate-clamped).  Construct this
-   class the same way or the vbs/lcg slew will not match.
+   IMPORTANT — ``dt`` sets the actuator time constant ``tau_act``, and ``sam.py`` builds
+   ``SAMTorch(dt=self.dt / self.n_integrator)``, so construct this class the same way or
+   the vbs/lcg slew will not match.  ``tau_act`` is a CONSTANT, not the integration
+   substep: the actuator dynamics ``u_dot = (u_ref - u)/tau_act`` (rate-clamped) must not
+   depend on the discretization, or a bundle whose samples integrate different horizons
+   would mix actuator models.  Pass ``tau_act`` explicitly to override.
 
    Non-smoothness (matters for IPOPT, not for torch)
    -------------------------------------------------
@@ -82,7 +84,7 @@ class SAMCasadiBundle:
     """Symbolic 15-D SAM dynamics mirroring ``SAM_torch.SAMTorch``."""
 
     def __init__(self, dt=0.05, V_current=0.0, beta_current=0.0, smooth=False,
-                 vel_eps=0.0):
+                 vel_eps=0.0, tau_act=None):
         """
         vel_eps : float
             Regularises the speed magnitude as ``sqrt(|nu_xyz|^2 + vel_eps)``.
@@ -98,6 +100,11 @@ class SAMCasadiBundle:
         """
         ref = _SAMNumpy(dt=dt, V_current=V_current, beta_current=beta_current)
         self.dt = float(dt)
+        # Actuator tracking time constant, mirroring SAMTorch.tau_act.  Defaults to `dt`,
+        # so this is a rename with NO numeric change -- but it decouples the actuator
+        # model from the integration substep, which is what lets `rollout` be called with
+        # `duration/n_sub != dt`.
+        self.tau_act = float(dt if tau_act is None else tau_act)
         self.smooth = bool(smooth)
         self.vel_eps = float(vel_eps)
 
@@ -285,7 +292,7 @@ class SAMCasadiBundle:
         rhs = tau - C @ nu_r - cs.DM(self.D) @ nu_r - g_vec
         nu_dot = cs.solve(M, rhs)
 
-        u_dot_raw = (u_ref[0:2] - u) / self.dt      # NOTE: dt is the SUBSTEP
+        u_dot_raw = (u_ref[0:2] - u) / self.tau_act   # constant, NOT the substep
         u_dot = cs.vertcat(
             _clamp(u_dot_raw[0], -self.vbs_dot_max, self.vbs_dot_max, self.smooth),
             _clamp(u_dot_raw[1], -self.lcg_dot_max, self.lcg_dot_max, self.smooth))
@@ -353,8 +360,9 @@ class SAMCasadiBundle:
         INCLUDING its per-substep quaternion renormalisation (and the one on entry).
         Symbolic-friendly (X/U_ref may be SX/MX/DM).
 
-        NOTE: ``duration/n_sub`` must equal the ``dt`` this object was constructed
-        with, since ``dt`` drives the actuator slew (torch re-assigns ``self.dt = h``
+        NOTE: ``duration/n_sub`` no longer has to equal the ``dt`` this object was
+        constructed with -- the actuator slew runs on the constant ``tau_act`` (torch
+        does the same; it used to re-assign ``self.dt = h``
         inside its rollout; here it is fixed at construction)."""
         h = duration / n_sub
         X = self._normalize_quat(X)

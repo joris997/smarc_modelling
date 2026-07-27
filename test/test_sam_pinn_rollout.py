@@ -38,15 +38,26 @@ import numpy as np
 # This file lives inside the smarc_modelling submodule.  Put the repo root and the
 # smarc_modelling package src on sys.path so imports resolve regardless of cwd
 # (mirrors test_sam_rollout.py / test_sam_torch_parity.py):
-#   parents[0]=test [1]=smarc_modelling [2]=robots [3]=classes [4]=bundle-stl
+#   parents[0]=test [1]=smarc_modelling [2]=robots [3]=utils [4]=bundle-stl
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
-_SMARC_SRC = REPO_ROOT / "classes" / "robots" / "smarc_modelling" / "src"
+_SMARC_SRC = REPO_ROOT / "utils" / "robots" / "smarc_modelling" / "src"
 for _p in (REPO_ROOT, _SMARC_SRC):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import pytest                                                   # noqa: E402
+
 from smarc_modelling.vehicles.SAM_PIML import SAM_PIML          # noqa: E402
-from smarc_modelling.piml.pinn.pinn import load_pinn_D, pinn_D_predict  # noqa: E402
+from smarc_modelling.piml.pinn.pinn import (                    # noqa: E402
+    _default_ckpt, load_pinn_D, pinn_D_predict)
+
+# The trained network is a build artefact, not source (`checkpoints/` is git-ignored), so
+# it may be absent.  Skip rather than fail so these do not mask the white-box parity
+# gates.  `_default_ckpt` searches $SAM_PINN_CKPT, checkpoints/ and the parent repo's
+# assets/ — the same resolution the model itself uses.
+pytestmark = pytest.mark.skipif(
+    not _default_ckpt().exists(),
+    reason=f"PINN checkpoint not present (searched up to {_default_ckpt()})")
 
 # Constant the white-box branch collapses to (damping_factor / damping_rot).
 WHITEBOX_D_DIAG = np.array([60.0, 60.0, 60.0, 5.0, 5.0, 5.0])

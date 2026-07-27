@@ -17,15 +17,16 @@ import pathlib
 import sys
 
 import numpy as np
+import pytest
 
 # Repo root on sys.path (mirrors test_sam_rollout.py):
-#   parents[0]=test [1]=smarc_modelling [2]=robots [3]=classes [4]=bundle-stl
+#   parents[0]=test [1]=smarc_modelling [2]=robots [3]=utils [4]=bundle-stl
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 # Put the smarc_modelling package src on path so the vehicle modules import.
-_SMARC_SRC = REPO_ROOT / "classes" / "robots" / "smarc_modelling" / "src"
+_SMARC_SRC = REPO_ROOT / "utils" / "robots" / "smarc_modelling" / "src"
 if str(_SMARC_SRC) not in sys.path:
     sys.path.insert(0, str(_SMARC_SRC))
 
@@ -109,17 +110,17 @@ def test_rollout_parallel_parity():
     control-expansion of ``rollout_parallel`` against a per-triple ``robot.dynamics`` loop,
     plus checks the residual arrays.
     """
-    from classes.robots.sam import SAM as SAMRobot   # noqa: E402
-    from classes.problem import Problem              # noqa: E402
+    from utils.robots.sam import SAM as SAMRobot   # noqa: E402
+    from utils.problem import Problem              # noqa: E402
     from utils.controls import Controls              # noqa: E402
 
-    robot = SAMRobot(dt=0.6, n_integrator=10, corridor_length=3.0)
+    robot = SAMRobot(dt=0.6, n_integrator=10, leg_length=3.0)
     # Force the batched twin onto CPU so accumulated round-off stays at float64 level.
     robot._sam_torch = SAMTorch(dt=robot.dt / robot.n_integrator, device="cpu")
 
     # Minimal Problem just to populate the residual weights.
     goal = np.zeros(robot.nx)
-    goal[0] = robot.corridor_length
+    goal[0] = robot.leg_length
     problem = Problem(
         robot=robot, N=5, start_state=np.zeros(robot.nx), goal_state=goal,
         R_stage=2.0, Q_terminal=3.0, M_s=4, u_order=1,
@@ -132,7 +133,7 @@ def test_rollout_parallel_parity():
 
     # Random in-corridor states with unit quaternions.
     W_X = np.zeros((N, Ms, K, NX))
-    W_X[..., 0] = rng.uniform(0.0, robot.corridor_length, size=(N, Ms, K))
+    W_X[..., 0] = rng.uniform(0.0, robot.leg_length, size=(N, Ms, K))
     W_X[..., 1] = rng.uniform(-0.5, 0.5, size=(N, Ms, K))
     W_X[..., 2] = robot.depth
     q = rng.standard_normal((N, Ms, K, 4))
@@ -175,7 +176,19 @@ def test_rollout_parallel_parity():
 
 # ---------------------------------------------------------------------------
 # Learned damping (piml_type="pinn"): the optional state-dependent D path.
+#
+# The trained network is a build artefact, not source: `checkpoints/pinn.pt` is not
+# in the repo.  Skip rather than fail so these do not mask the white-box parity
+# gates above, which are what the dynamics rewrite is validated against.
 # ---------------------------------------------------------------------------
+from smarc_modelling.piml.pinn.pinn import _default_ckpt         # noqa: E402
+
+requires_pinn = pytest.mark.skipif(
+    not _default_ckpt().exists(),
+    reason=f"PINN checkpoint not present (searched up to {_default_ckpt()})")
+
+
+@requires_pinn
 def test_pinn_D_matches_network():
     """SAMTorch's batched D equals the per-row reference ``pinn_D_predict``."""
     from smarc_modelling.piml.pinn.pinn import load_pinn_D, pinn_D_predict  # noqa: E402
@@ -202,6 +215,7 @@ def test_pinn_D_matches_network():
         assert np.linalg.eigvalsh(0.5 * (D + D.T)).min() > -1e-6
 
 
+@requires_pinn
 def test_pinn_equals_constant_at_zero_velocity():
     """With zero body velocity (and no current) ``D @ nu_r = 0`` for both models, so
     ``piml_type='pinn'`` and the default must give *bit-identical* dynamics — the flag
@@ -218,6 +232,7 @@ def test_pinn_equals_constant_at_zero_velocity():
     assert err < 1e-10, f"pinn/const dynamics differ at nu=0 by {err:.3e}"
 
 
+@requires_pinn
 def test_pinn_changes_damping_under_motion():
     """At nonzero velocity the learned D perturbs only the body-acceleration block;
     kinematics (eta_dot) and actuator dynamics are untouched."""
@@ -235,6 +250,7 @@ def test_pinn_changes_damping_under_motion():
         "learned D should change nu_dot under motion"
 
 
+@requires_pinn
 def test_pinn_rollout_finite():
     """A batched Euler rollout with the learned D stays finite."""
     rng = np.random.default_rng(10)

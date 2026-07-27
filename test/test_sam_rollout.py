@@ -39,12 +39,12 @@ import numpy as np
 # lives in the parent bundle-stl repo.  Put the repo root on sys.path so
 # ``classes`` / ``utils`` import regardless of cwd.
 #   .../bundle-stl/classes/robots/smarc_modelling/test/test_sam_rollout.py
-#   parents[0]=test  [1]=smarc_modelling  [2]=robots  [3]=classes  [4]=bundle-stl
+#   parents[0]=test  [1]=smarc_modelling  [2]=robots  [3]=utils  [4]=bundle-stl
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from classes.robots.sam import SAM          # noqa: E402
+from utils.robots.sam import SAM          # noqa: E402
 from utils.controls import Controls         # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -52,18 +52,35 @@ from utils.controls import Controls         # noqa: E402
 # line up with an actual planner run.
 # ---------------------------------------------------------------------------
 N_KNOTS = 12                                 # examples/main_sam.py: Problem(N=12)
-S_OFF = -1.0                                 # throttle "off"  (rpm = 0)
-S_FULL = +1.0                                # throttle "full" (rpm = rpm_max)
+S_FULL = +1.0                                # throttle "full" (rpm = +rpm_max)
 DS_TRIM = 0.085                              # stern-plane angle that zeroes prop-pitch
 
 
+def _s_coast(robot: SAM) -> float:
+    """The throttle that produces rpm = 0.
+
+    The throttle is BIPOLAR: ``s = -1`` is full REVERSE (``-rpm_rev_max``), not "off".
+    ``_expand_control_batch`` keeps the signed *thrust proxy* ``P`` affine in ``s``::
+
+        P(s) = P_rev + (s+1)/2 * (P_fwd - P_rev),  P_fwd = rpm_max^2,
+                                                   P_rev = -rpm_rev_max^2 / rev_thrust_ratio
+
+    so the coast point is wherever ``P(s) = 0``, i.e. ``s = -2*P_rev/(P_fwd-P_rev) - 1``
+    (≈ -0.818 at the default constants) — NOT ``s = -1``.  Derive it from the robot's
+    own constants so this tracks any retune of the thrust map.
+    """
+    P_fwd = robot.rpm_max ** 2
+    P_rev = -(robot.rpm_rev_max ** 2) / robot.rev_thrust_ratio
+    return 2.0 * (-P_rev) / (P_fwd - P_rev) - 1.0
+
+
 def _make_robot() -> SAM:
-    return SAM(dt=0.6, n_integrator=10, corridor_length=3.0)
+    return SAM(dt=0.6, n_integrator=10, leg_length=3.0)
 
 
 def _knot_spacing(robot: SAM) -> float:
     """Forward distance the planner needs to cover per knot."""
-    return robot.corridor_length / (N_KNOTS - 1)
+    return robot.leg_length / (N_KNOTS - 1)
 
 
 def _start_state(robot: SAM) -> np.ndarray:
@@ -98,35 +115,66 @@ def _dx_of_throttle(robot: SAM, x0: np.ndarray, s) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # 1. Rollout sanity
 # ---------------------------------------------------------------------------
-def test_throttle_off_is_static():
-    """Throttle off (s=-1 -> rpm 0) => the AUV does not move."""
+def test_throttle_coast_is_static():
+    """At the coast throttle (rpm = 0) the AUV does not move."""
     robot = _make_robot()
     x0 = _start_state(robot)
-    x_next = _step(robot, [0.0, 0.0, S_OFF], x0)
+    x_next = _step(robot, [0.0, 0.0, _s_coast(robot)], x0)
     assert abs(x_next[0] - x0[0]) < 1e-6
     assert abs(x_next[1] - x0[1]) < 1e-6
     assert abs(x_next[7]) < 1e-6          # body surge velocity stays zero
 
 
 def test_full_throttle_moves_forward():
-    """Full throttle drives the AUV forward by more than a knot spacing — reachability is fine."""
+    """Full throttle accelerates forward and settles at a sane cruise speed.
+
+    This used to assert that ONE knot from REST clears the knot spacing. That no longer
+    holds at this fixture's ``dt=0.6``: full-throttle terminal surge is ~0.32 m/s, so a
+    0.273 m spacing needs ``dt >~ 0.86 s``.  (``rpm_max`` is 500 here; the from-rest
+    displacement was ~0.86 m back when it was 1525, and thrust goes as rpm^2.)
+    ``examples/main_sam.py`` runs ``dt=1.0``, which does clear it — so assert the dynamics
+    property here and the dt-dependent reachability explicitly, rather than a stale constant.
+    """
     robot = _make_robot()
     x0 = _start_state(robot)
-    dx = _step(robot, [0.0, 0.0, S_FULL], x0)[0] - x0[0]
-    spacing = _knot_spacing(robot)
-    assert dx > spacing, f"full-throttle dx={dx:.4f} should exceed knot spacing={spacing:.4f}"
-    # Empirically ~0.86 m; assert comfortably above spacing (~3x headroom).
-    assert dx > 2.0 * spacing
+    x1 = _step(robot, [0.0, 0.0, S_FULL], x0)
+    assert x1[0] - x0[0] > 0.0, "full throttle must move the AUV forward"
+    assert x1[7] > 0.0, "full throttle must build positive surge velocity"
+
+    # Cruise speed: chain enough knots to reach the thrust/drag balance.
+    x = x0.copy()
+    for _ in range(10):
+        x = _step(robot, [0.0, 0.0, S_FULL], x)
+    u_cruise = x[7]
+    assert 0.2 < u_cruise < 1.0, f"implausible cruise surge {u_cruise:.3f} m/s"
+    # Reachability is a statement about the SCENARIO's dt, not about this fixture's.
+    assert u_cruise * 1.0 > _knot_spacing(robot), (
+        f"at cruise {u_cruise:.3f} m/s a dt=1.0 knot must clear the "
+        f"{_knot_spacing(robot):.3f} m spacing")
 
 
-def test_forward_only():
-    """Every throttle maps to a forward (>= 0) displacement — no reverse thrust."""
+def test_throttle_is_bipolar_and_monotone():
+    """Displacement runs monotonically from reverse through coast to full forward.
+
+    The throttle is deliberately BIPOLAR (see ``SAM._expand_control_batch``): ``s = -1``
+    is full reverse, giving the planner active braking authority, without which the
+    terminal velocity cannot be driven to zero (passive drag is too weak over one knot).
+    An earlier revision of the model was forward-only, and this test used to assert
+    exactly that — the sign convention it now pins is the opposite one.
+    """
     robot = _make_robot()
     x0 = _start_state(robot)
-    dxs = _dx_of_throttle(robot, x0, np.linspace(-1.0, 1.0, 21))
-    assert (dxs >= -1e-9).all(), "throttle must never produce reverse motion"
-    assert dxs[0] < 1e-6 and dxs[-1] > _knot_spacing(robot)   # monotone off -> full
-    assert np.all(np.diff(dxs) > -1e-9)                       # monotone non-decreasing
+    s_coast = _s_coast(robot)
+    s = np.linspace(-1.0, 1.0, 21)
+    dxs = _dx_of_throttle(robot, x0, s)
+
+    assert dxs[0] < -1e-6, "s = -1 must drive the AUV backwards (reverse thrust)"
+    assert dxs[-1] > 1e-6, "s = +1 must drive the AUV forwards"
+    assert np.all(np.diff(dxs) > -1e-9), "displacement must be monotone in the throttle"
+    # Reverse is ~rev_thrust_ratio times weaker than forward.
+    assert abs(dxs[0]) < abs(dxs[-1])
+    # The zero crossing sits at the coast throttle, not at s = -1.
+    assert abs(_dx_of_throttle(robot, x0, s_coast)[0]) < 1e-6
 
 
 def test_pitch_trim():
@@ -198,7 +246,7 @@ def _print_summary():
 
     print("=" * 72)
     print("SAM coarse-Euler rollout  (dt=%.2f, n_integrator=%d, corridor=%.1f, N=%d)"
-          % (robot.dt, robot.n_integrator, robot.corridor_length, N_KNOTS))
+          % (robot.dt, robot.n_integrator, robot.leg_length, N_KNOTS))
     print("knot spacing the planner must cover per knot: %.4f m" % spacing)
     print("control[2] is now a normalised throttle s in [-1,1] (s=-1 off, s=+1 full)")
     print("=" * 72)

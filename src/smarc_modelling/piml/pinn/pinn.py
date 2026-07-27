@@ -2,11 +2,17 @@
 # -*- coding: utf-8 -*-
 
 # Imports
+import os
 import pathlib
 import torch
 import torch.nn as nn
 import numpy as np
 import sys
+
+# The Cholesky model lives in its own module (this one already carries the legacy PINN,
+# the newer PINN_D, the loaders and a training __main__).  damping.py must NOT import
+# back, so the dependency stays one-way.
+from smarc_modelling.piml.pinn import damping as _damping
 
 # ``load_data_from_bag`` (and matplotlib) are only needed for the training entry
 # point below; they pull in ROS (rosbag2_py), which is absent on inference-only
@@ -112,7 +118,42 @@ def pinn_predict(model, eta, nu, u):
 #   * the 36 outputs reshape to A (6x6); D = A @ A.T is symmetric PSD by design.
 # ``PINN_D`` / ``load_pinn_D`` / ``pinn_D_predict`` load and run that format.
 
+# Where to look for the trained damping weights, in order.  `checkpoints/` is
+# git-ignored, so on a fresh clone it is empty and the weights live in the PARENT repo's
+# `utils/robots/assets/` instead — which is why that is on the search path.
+#   parents[0]=pinn [1]=piml [2]=smarc_modelling [3]=src [4]=<submodule root> [5]=robots
+#
+# `_SUBMODULE_CKPT_DIR` is where the weights ACTUALLY live and is searched first.  The
+# other two are kept only for back-compat: `_CHECKPOINTS_DIR` (parents[2]) resolves to
+# `src/smarc_modelling/checkpoints/`, one level too deep, and `_ASSETS_DIR` has never
+# held a pinn.pt — between them `piml_type="pinn"` raised FileNotFoundError on every
+# checkout, which is why several PINN tests silently skipped.  See
+# tests/test_sam_cholesky_damping.py::test_default_ckpt_searches_submodule_root.
+_SUBMODULE_CKPT_DIR = pathlib.Path(__file__).resolve().parents[4] / "checkpoints"
 _CHECKPOINTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "checkpoints"
+_ASSETS_DIR = pathlib.Path(__file__).resolve().parents[5] / "assets"
+
+
+def _ckpt_candidates(name: str = "pinn.pt"):
+    """Search order for a damping checkpoint, as a list of paths (need not exist).
+
+    Exposed so tests can pin the order without needing the git-ignored weights.
+    """
+    env = os.environ.get("SAM_PINN_CKPT")
+    return ([pathlib.Path(env)] if env else []) + [
+        _SUBMODULE_CKPT_DIR / name,
+        _CHECKPOINTS_DIR / name,
+        _ASSETS_DIR / name,
+    ]
+
+
+def _default_ckpt(name: str = "pinn.pt"):
+    """First existing candidate, else the canonical path (so the error names it)."""
+    candidates = _ckpt_candidates(name)
+    for c in candidates:
+        if c.exists():
+            return c
+    return _SUBMODULE_CKPT_DIR / name
 
 
 class PINN_D(nn.Module):
@@ -152,13 +193,46 @@ class PINN_D(nn.Module):
         return A @ A.transpose(-2, -1)
 
 
-def load_pinn_D(path: str = None):
-    """Load a new-format PINN damping model, reconstructing its shape from the
-    checkpoint (so layer count / width are read off the saved weights)."""
+def load_pinn_D(path: str = None, name: str = "pinn.pt"):
+    """Load a learned damping model, reconstructing its shape from the checkpoint
+    (so layer count / width are read off the saved weights).
+
+    ``path=None`` searches ``_ckpt_candidates(name)``: ``$SAM_PINN_CKPT``, the submodule
+    root's ``checkpoints/``, then two legacy locations.  The ``checkpoints/`` directory is
+    **git-ignored** (the trained weights are a local build artefact, not source), so on a
+    fresh clone none of them exist and the error below names every path tried.
+    """
     if path is None:
-        path = _CHECKPOINTS_DIR / "pinn.pt"
+        path = _default_ckpt(name)
+    path = pathlib.Path(path)
+    if not path.exists():
+        searched = "\n".join(f"      {c}" for c in _ckpt_candidates(name))
+        raise FileNotFoundError(
+            f"PINN damping checkpoint not found: {path}\n"
+            f"Searched (in order):\n{searched}\n"
+            f"The checkpoints/ directory is git-ignored, so trained weights are not in a "
+            f"fresh clone. Drop {name} in one of those locations, or pass the path "
+            f"explicitly:\n"
+            f"    SAM(piml_type='pinn', piml_ckpt='/path/to/{name}')\n"
+            f"Use piml_type=None for the white-box constant-D model.")
     ck = torch.load(str(path), weights_only=True)
     sd = ck["state_dict"]
+
+    # --- format dispatch --------------------------------------------------
+    # Legacy checkpoints have no "format" key at all, hence the default.  The structural
+    # fallback (output width) is a second, independent discriminator so a hand-built or
+    # half-migrated checkpoint cannot silently load as the wrong architecture.
+    fmt = ck.get("format")
+    if fmt is None:
+        out_w = sd["output_layer.weight"].shape[0]
+        fmt = "full_A_v0" if out_w == 36 else _damping.FORMAT
+    if fmt == _damping.FORMAT:
+        return _damping.CholeskyDamping.from_checkpoint(ck)
+    if fmt != "full_A_v0":
+        raise ValueError(
+            f"unknown damping checkpoint format {fmt!r} in {path}\n"
+            f"known formats: 'full_A_v0' (12->...->36, D = A A^T) and "
+            f"{_damping.FORMAT!r} (D = L L^T).")
 
     n_hidden = sum(1 for k in sd if k.startswith("layers.") and k.endswith(".weight"))
     in_dim = sd["layers.0.weight"].shape[1]

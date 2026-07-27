@@ -58,7 +58,7 @@ Refactored: David Doerner
 import numpy as np
 import math
 from scipy.linalg import block_diag
-from smarc_modelling.lib.gnc import *
+from utils.robots.smarc_modelling.src.smarc_modelling.lib.gnc import *
 
 
 class SolidStructure:

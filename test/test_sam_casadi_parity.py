@@ -84,7 +84,7 @@ def test_expand_control_matches_robot():
     """The CasADi throttle map must match SAM._expand_control_batch bit-for-bit."""
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")))
-    from classes.robots.sam import SAM
+    from utils.robots.sam import SAM
     import casadi as cs
 
     robot = SAM(dt=2.5, n_integrator=5, scenario="L", piml_type=None, integrator="rk4")

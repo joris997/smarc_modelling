@@ -181,7 +181,9 @@ class SAM_PIML():
             dt=0.02,
             V_current=0,
             beta_current=0,
-            piml_type=None
+            piml_type=None,
+            piml_ckpt=None,
+            piml_ckpt_name="pinn.pt"
     ):
         self.dt = dt # Sim time step, necessary for evaluation of the actuator dynamics
         
@@ -282,8 +284,12 @@ class SAM_PIML():
         self.piml_type= piml_type
 
         if self.piml_type == "pinn":
-            print(f" Physics Informed Neural Network model initialized")
-            self.piml_model = load_pinn_D()
+            # An explicit `piml_ckpt` (or `piml_ckpt_name`) is what lets two learned
+            # variants be live in one process -- the benchmark compares pinn.pt against
+            # pinn_reduced.pt side by side, which $SAM_PINN_CKPT is too blunt to express.
+            self.piml_model = load_pinn_D(piml_ckpt, piml_ckpt_name)
+            print(f" Physics Informed Neural Network model initialized "
+                  f"({type(self.piml_model).__name__})")
 
         # For white-box
         if piml_type == None:

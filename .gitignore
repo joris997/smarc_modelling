@@ -17,3 +17,10 @@ c_generated_code/Makefile
 **/c_generated_code
 mpc_codegen
 src/smarc_modelling/checkpoints/
+data/
+checkpoints/
+
+# train/ artefacts: benchmark JSON, figures and run logs are generated output.
+train/results/
+train/*.log
+train/__pycache__/

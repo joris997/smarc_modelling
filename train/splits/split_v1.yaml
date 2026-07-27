@@ -1,0 +1,221 @@
+cfg:
+  bad_bag_weight: 0.25
+  good_bag_weight: 1.0
+  seed: 0
+  use_bad_bags: true
+  val_frac: 0.15
+dropped:
+  evaluate_1: only 0 usable samples (< 40)
+  evaluate_2: duplicate .db3 of rosbag_113
+  evaluate_3: only 34 usable samples (< 40)
+  evaluate_4: duplicate .db3 of rosbag_3
+  evaluate_5: duplicate .db3 of rosbag_113
+  rosbag_10: corrupt ground truth (errors with turn rates)
+  rosbag_101: DNU label
+  rosbag_104: DNU label
+  rosbag_105: corrupt ground truth (errors in turn rates)
+  rosbag_109: DNU label
+  rosbag_11: only 24 usable samples (< 40)
+  rosbag_110: DNU label
+  rosbag_111: corrupt ground truth (minor mocap errors)
+  rosbag_112: only 0 usable samples (< 40)
+  rosbag_113: only 22 usable samples (< 40)
+  rosbag_114: duplicate .db3 of rosbag_85
+  rosbag_12: corrupt ground truth (errors with turn rates)
+  rosbag_14: DNU label
+  rosbag_15: only 0 usable samples (< 40)
+  rosbag_16: only 18 usable samples (< 40)
+  rosbag_20: only 37 usable samples (< 40)
+  rosbag_21: DNU label
+  rosbag_22: DNU label
+  rosbag_23: DNU label
+  rosbag_24: DNU label
+  rosbag_30: DNU label
+  rosbag_32: DNU label
+  rosbag_34: only 34 usable samples (< 40)
+  rosbag_37: only 37 usable samples (< 40)
+  rosbag_38: only 30 usable samples (< 40)
+  rosbag_40: DNU label
+  rosbag_43: only 15 usable samples (< 40)
+  rosbag_44: only 37 usable samples (< 40)
+  rosbag_45: only 15 usable samples (< 40)
+  rosbag_47: corrupt ground truth (errors with turn rates)
+  rosbag_50: only 36 usable samples (< 40)
+  rosbag_51: DNU label
+  rosbag_52: DNU label
+  rosbag_54: corrupt ground truth (errors with turn rates)
+  rosbag_56: only 14 usable samples (< 40)
+  rosbag_57: only 29 usable samples (< 40)
+  rosbag_58: only 17 usable samples (< 40)
+  rosbag_59: only 35 usable samples (< 40)
+  rosbag_6: DNU label
+  rosbag_65: only 23 usable samples (< 40)
+  rosbag_68: DNU label
+  rosbag_72: DNU label
+  rosbag_75: only 17 usable samples (< 40)
+  rosbag_79: DNU label
+  rosbag_84: DNU label
+  rosbag_87: DNU label
+  rosbag_89: corrupt ground truth (minor mocap errors)
+  rosbag_9.0: only 30 usable samples (< 40)
+  rosbag_9.5: only 34 usable samples (< 40)
+  rosbag_91: corrupt ground truth (posetive bias in speeds)
+  rosbag_92: only 0 usable samples (< 40)
+  rosbag_93: only 26 usable samples (< 40)
+  rosbag_95: only 19 usable samples (< 40)
+  rosbag_98: DNU label
+eval_extra: []
+md5_alias:
+  evaluate_2: rosbag_113
+  evaluate_4: rosbag_3
+  evaluate_5: rosbag_113
+  rosbag_114: rosbag_85
+smoke:
+- evaluate_1
+- evaluate_3
+- rosbag_11
+- rosbag_112
+- rosbag_113
+- rosbag_15
+- rosbag_16
+- rosbag_20
+- rosbag_34
+- rosbag_37
+- rosbag_38
+- rosbag_43
+- rosbag_44
+- rosbag_45
+- rosbag_50
+- rosbag_56
+- rosbag_57
+- rosbag_58
+- rosbag_59
+- rosbag_65
+- rosbag_75
+- rosbag_9.0
+- rosbag_9.5
+- rosbag_92
+- rosbag_93
+- rosbag_95
+test:
+- rosbag_18
+- rosbag_3
+- rosbag_66
+- rosbag_73
+train:
+- rosbag_1
+- rosbag_100
+- rosbag_102
+- rosbag_103
+- rosbag_106
+- rosbag_108
+- rosbag_13
+- rosbag_17
+- rosbag_19
+- rosbag_2
+- rosbag_25
+- rosbag_26
+- rosbag_27
+- rosbag_28
+- rosbag_29
+- rosbag_31
+- rosbag_33
+- rosbag_35
+- rosbag_36
+- rosbag_4
+- rosbag_42
+- rosbag_46
+- rosbag_48
+- rosbag_49
+- rosbag_5
+- rosbag_53
+- rosbag_55
+- rosbag_60
+- rosbag_61
+- rosbag_62
+- rosbag_63
+- rosbag_64
+- rosbag_67
+- rosbag_69
+- rosbag_7
+- rosbag_70
+- rosbag_71
+- rosbag_76
+- rosbag_77
+- rosbag_78
+- rosbag_8
+- rosbag_80
+- rosbag_81
+- rosbag_83
+- rosbag_85
+- rosbag_86
+- rosbag_88
+- rosbag_90
+- rosbag_94
+- rosbag_96
+- rosbag_97
+- rosbag_99
+val:
+- rosbag_107
+- rosbag_39
+- rosbag_41
+- rosbag_74
+- rosbag_82
+weight:
+  rosbag_1: 1.0
+  rosbag_100: 0.25
+  rosbag_102: 1.0
+  rosbag_103: 0.25
+  rosbag_106: 0.25
+  rosbag_107: 1.0
+  rosbag_108: 1.0
+  rosbag_13: 1.0
+  rosbag_17: 1.0
+  rosbag_19: 1.0
+  rosbag_2: 0.25
+  rosbag_25: 1.0
+  rosbag_26: 0.25
+  rosbag_27: 0.25
+  rosbag_28: 1.0
+  rosbag_29: 0.25
+  rosbag_31: 1.0
+  rosbag_33: 0.25
+  rosbag_35: 0.25
+  rosbag_36: 0.25
+  rosbag_39: 1.0
+  rosbag_4: 0.25
+  rosbag_41: 1.0
+  rosbag_42: 0.25
+  rosbag_46: 1.0
+  rosbag_48: 1.0
+  rosbag_49: 1.0
+  rosbag_5: 1.0
+  rosbag_53: 1.0
+  rosbag_55: 1.0
+  rosbag_60: 0.25
+  rosbag_61: 1.0
+  rosbag_62: 1.0
+  rosbag_63: 0.25
+  rosbag_64: 0.25
+  rosbag_67: 1.0
+  rosbag_69: 1.0
+  rosbag_7: 0.25
+  rosbag_70: 1.0
+  rosbag_71: 0.25
+  rosbag_74: 1.0
+  rosbag_76: 1.0
+  rosbag_77: 0.25
+  rosbag_78: 0.25
+  rosbag_8: 0.25
+  rosbag_80: 1.0
+  rosbag_81: 0.25
+  rosbag_82: 1.0
+  rosbag_83: 0.25
+  rosbag_85: 1.0
+  rosbag_86: 1.0
+  rosbag_88: 1.0
+  rosbag_90: 0.25
+  rosbag_94: 1.0
+  rosbag_96: 1.0
+  rosbag_97: 1.0
+  rosbag_99: 0.25
